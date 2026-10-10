@@ -6,6 +6,7 @@ import '../../models/models.dart';
 import '../../providers/product_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../utils/format.dart';
 import '../../widgets/app_dialog.dart';
 import '../../widgets/common.dart';
 import '../../widgets/product_thumb.dart';
@@ -24,27 +25,30 @@ class ProductsScreen extends StatefulWidget {
 class _ProductsScreenState extends State<ProductsScreen> {
   String _query = '';
 
-  void _openForm([Product? product]) {
-    showAppDialog<void>(
+  Future<void> _openForm([Product? product]) {
+    return showAppDialog<void>(
       context,
       (_) => ProductFormDialog(
         product: product,
-        onSubmit: (name, price, stock, image) {
+        onSubmit: (name, price, stock, image) async {
           final products = context.read<ProductProvider>();
-          if (product != null) {
-            products.updateProduct(product.id, name: name, price: price, stock: stock, image: image);
-            showToast(context, title: 'Product updated', description: '$name has been updated.');
-          } else {
-            products.addProduct(name: name, price: price, stock: stock, image: image);
-            showToast(context, title: 'Product added', description: '$name has been added to your inventory.');
+          final saved = product != null
+              ? await products.updateProduct(product.id, name: name, price: price, stock: stock, image: image)
+              : await products.addProduct(name: name, price: price, stock: stock, image: image);
+          if (saved && mounted) {
+            showToast(context,
+                title: product != null ? 'Product updated' : 'Product added',
+                description: product != null ? '$name has been updated.' : '$name has been added to your inventory.');
           }
+          return saved;
         },
       ),
+      dismissible: false,
     );
   }
 
-  void _confirmDelete(Product product) {
-    showAppDialog<void>(
+  Future<void> _confirmDelete(Product product) {
+    return showAppDialog<void>(
       context,
       (dialogCtx) => AppDialog(
         showClose: false,
@@ -64,11 +68,13 @@ class _ProductsScreenState extends State<ProductsScreen> {
               AppButton(
                 label: 'Delete',
                 variant: ButtonVariant.destructive,
-                onPressed: () {
+                onPressed: () async {
                   Navigator.of(dialogCtx).pop();
-                  context.read<ProductProvider>().deleteProduct(product.id);
-                  showToast(context,
-                      title: 'Product deleted', description: 'The product has been removed from your inventory.');
+                  final deleted = await context.read<ProductProvider>().deleteProduct(product.id);
+                  if (deleted && mounted) {
+                    showToast(context,
+                        title: 'Product deleted', description: 'The product has been removed from your inventory.');
+                  }
                 },
               ),
             ],
@@ -96,13 +102,13 @@ class _ProductsScreenState extends State<ProductsScreen> {
               icon: LucideIcons.package,
               gradient: p.gradientPrimary,
               title: 'Product Management',
-              subtitle: '${all.length} products in inventory',
+              subtitle: '${plural(all.length, 'product')} in inventory',
               action: AppButton(
                 label: 'Add Product',
                 icon: LucideIcons.plus,
                 height: 44,
                 shadow: p.shadowMedium,
-                onPressed: () => _openForm(),
+                onPressed: _openForm,
               ),
             ),
             const SizedBox(height: 32),
@@ -157,7 +163,7 @@ class _ProductList extends StatelessWidget {
               const SizedBox(width: 60),
               Expanded(child: Text('Product Name', style: head)),
               Text('Price / Stock', style: head),
-              const SizedBox(width: 80),
+              const SizedBox(width: 104), // edit + delete buttons
             ]),
           ),
           for (var i = 0; i < products.length; i++) ...[
@@ -192,9 +198,14 @@ class _ProductList extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(width: 8),
-                AppIconButton(icon: LucideIcons.squarePen, onPressed: () => onEdit(products[i])),
+                AppIconButton(
+                  icon: LucideIcons.squarePen,
+                  tooltip: 'Edit ${products[i].name}',
+                  onPressed: () => onEdit(products[i]),
+                ),
                 AppIconButton(
                   icon: LucideIcons.trash2,
+                  tooltip: 'Delete ${products[i].name}',
                   onPressed: () => onDelete(products[i]),
                   color: p.mutedForeground,
                 ),

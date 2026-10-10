@@ -23,7 +23,9 @@ class ProductCard extends StatelessWidget {
     return PressScale(
       enabled: !outOfStock,
       onTap: () => onSelect(product),
+      // expand: fill the grid cell so every card has the same width.
       child: Stack(
+        fit: StackFit.expand,
         clipBehavior: Clip.none,
         children: [
           Opacity(

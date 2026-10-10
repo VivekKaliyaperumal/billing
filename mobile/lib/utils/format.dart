@@ -1,12 +1,12 @@
 import 'package:intl/intl.dart';
 
-/// Same as JS `amount.toLocaleString('en-IN', {min/max fraction digits: 2})`:
-/// Indian grouping (12,34,567.89) with exactly two decimals.
-String formatIndian(double amount) {
-  final negative = amount < 0;
-  final fixed = amount.abs().toStringAsFixed(2);
-  final parts = fixed.split('.');
-  final intPart = parts[0];
+/// Formats minor units with Indian grouping and exactly two decimals,
+/// e.g. 123456789 -> "12,34,567.89". Integer-only, so no rounding drift.
+String formatIndian(int minor) {
+  final negative = minor < 0;
+  final abs = minor.abs();
+  final intPart = (abs ~/ 100).toString();
+  final fraction = (abs % 100).toString().padLeft(2, '0');
   String grouped;
   if (intPart.length <= 3) {
     grouped = intPart;
@@ -21,17 +21,20 @@ String formatIndian(double amount) {
     if (rest.isNotEmpty) groups.insert(0, rest);
     grouped = '${groups.join(',')},$last3';
   }
-  return '${negative ? '-' : ''}$grouped.${parts[1]}';
+  return '${negative ? '-' : ''}$grouped.$fraction';
 }
+
+/// "1 item", "3 items". [many] defaults to [one] + "s".
+String plural(int count, String one, [String? many]) => '$count ${count == 1 ? one : (many ?? '${one}s')}';
 
 /// Plain number for chart axis ticks, like JS `${value}`.
 String formatAxis(double v) => v == v.roundToDouble() ? v.toInt().toString() : v.toString();
 
 // Equivalents of the web app's date output (en-IN browser locale).
-final dateTimeLocal = DateFormat('d/M/yyyy, h:mm:ss a'); // toLocaleString()
-final dateLocal = DateFormat('d/M/yyyy'); // toLocaleDateString()
+final dateTimeLocal = DateFormat('dd-MMM-yyyy, h:mm a'); // unambiguous, e.g. 10-Oct-2026
+final dateLocal = DateFormat('dd-MMM-yyyy');
 final timeHm = DateFormat('HH:mm');
-final dateTable = DateFormat('MMM dd, yyyy HH:mm');
+final dateTable = DateFormat('dd-MMM-yyyy HH:mm');
 final dateCsv = DateFormat('yyyy-MM-dd HH:mm');
 final dateFile = DateFormat('yyyy-MM-dd');
 final monthShort = DateFormat('MMM');

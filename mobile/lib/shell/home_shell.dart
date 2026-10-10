@@ -11,7 +11,9 @@ import '../screens/products/products_screen.dart';
 import '../screens/sales/sales_screen.dart';
 import '../screens/settings/settings_screen.dart';
 import '../theme/app_theme.dart';
+import '../utils/storage.dart';
 import '../widgets/common.dart';
+import '../widgets/toast.dart';
 
 class _NavItem {
   const _NavItem(this.label, this.icon);
@@ -39,9 +41,35 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
   @override
+  void initState() {
+    super.initState();
+    storageIssues.addListener(_showStorageIssue);
+    // Issues found while loading data happen before this screen exists.
+    if (storageIssues.value != null) WidgetsBinding.instance.addPostFrameCallback((_) => _showStorageIssue());
+  }
+
+  @override
+  void dispose() {
+    storageIssues.removeListener(_showStorageIssue);
+    super.dispose();
+  }
+
+  void _showStorageIssue() {
+    final message = storageIssues.value;
+    if (message == null || !mounted) return;
+    showToast(context, title: 'Data problem', description: message, destructive: true);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return Scaffold(
+    // Android back returns to Sales from other tabs before leaving the app.
+    return PopScope(
+      canPop: _index == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) setState(() => _index = 0);
+      },
+      child: Scaffold(
       appBar: const _TopBar(),
       body: BgPattern(
         child: IndexedStack(
@@ -79,6 +107,7 @@ class _HomeShellState extends State<HomeShell> {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -95,6 +124,7 @@ class _NavButton extends StatelessWidget {
     final fg = active ? Colors.white : p.mutedForeground;
     return PressScale(
       onTap: onTap,
+      semanticLabel: '${item.label} tab${active ? ', selected' : ''}',
       child: Center(
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),

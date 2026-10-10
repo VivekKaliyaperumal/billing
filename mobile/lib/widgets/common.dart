@@ -5,12 +5,16 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../theme/app_theme.dart';
 
-/// Shrinks to 0.98 while pressed (web `active:scale-[0.98]`).
+/// Shrinks to 0.98 while pressed (web `active:scale-[0.98]`). Announced to
+/// screen readers as a button.
 class PressScale extends StatefulWidget {
-  const PressScale({super.key, required this.child, this.onTap, this.enabled = true});
+  const PressScale({super.key, required this.child, this.onTap, this.enabled = true, this.semanticLabel});
   final Widget child;
   final VoidCallback? onTap;
   final bool enabled;
+
+  /// Spoken label; defaults to the text inside [child].
+  final String? semanticLabel;
 
   @override
   State<PressScale> createState() => _PressScaleState();
@@ -22,16 +26,21 @@ class _PressScaleState extends State<PressScale> {
   @override
   Widget build(BuildContext context) {
     final active = widget.enabled && widget.onTap != null;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTapDown: active ? (_) => setState(() => _down = true) : null,
-      onTapUp: active ? (_) => setState(() => _down = false) : null,
-      onTapCancel: active ? () => setState(() => _down = false) : null,
-      onTap: active ? widget.onTap : null,
-      child: AnimatedScale(
-        scale: _down ? 0.98 : 1,
-        duration: const Duration(milliseconds: 100),
-        child: widget.child,
+    return Semantics(
+      button: true,
+      enabled: active,
+      label: widget.semanticLabel,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: active ? (_) => setState(() => _down = true) : null,
+        onTapUp: active ? (_) => setState(() => _down = false) : null,
+        onTapCancel: active ? () => setState(() => _down = false) : null,
+        onTap: active ? widget.onTap : null,
+        child: AnimatedScale(
+          scale: _down ? 0.98 : 1,
+          duration: const Duration(milliseconds: 100),
+          child: widget.child,
+        ),
       ),
     );
   }
@@ -127,11 +136,12 @@ class AppIconButton extends StatelessWidget {
     super.key,
     required this.icon,
     this.onPressed,
-    this.size = 36,
+    this.size = 48,
     this.iconSize = 16,
     this.color,
     this.outlined = false,
     this.background,
+    this.tooltip,
   });
 
   final IconData icon;
@@ -142,10 +152,13 @@ class AppIconButton extends StatelessWidget {
   final bool outlined;
   final Color? background;
 
+  /// Shown on long press and read out by screen readers.
+  final String? tooltip;
+
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return Opacity(
+    final button = Opacity(
       opacity: onPressed == null ? 0.5 : 1,
       child: Material(
         color: background ?? (outlined ? p.background : Colors.transparent),
@@ -164,6 +177,7 @@ class AppIconButton extends StatelessWidget {
         ),
       ),
     );
+    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
   }
 }
 
@@ -378,8 +392,11 @@ class AppSearchField extends StatelessWidget {
     return Container(
       height: large ? 56 : 48,
       decoration: BoxDecoration(borderRadius: radius, boxShadow: large ? p.shadowSoft : null),
+      // expands: fill the container so its shadow matches the field.
       child: TextField(
         onChanged: onChanged,
+        expands: true,
+        maxLines: null,
         textAlignVertical: TextAlignVertical.center,
         style: TextStyle(fontSize: large ? 18 : 14, color: p.foreground),
         decoration: InputDecoration(
@@ -572,9 +589,9 @@ class BgPattern extends StatelessWidget {
         Positioned.fill(
           child: IgnorePointer(
             child: Stack(children: [
-              Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: blob(const Alignment(-0.6, -0.6), hsl(262, 83, 58), 0.05, 0.5)))),
-              Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: blob(const Alignment(0.6, 0.6), hsl(340, 82, 52), 0.05, 0.5)))),
-              Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: blob(const Alignment(-0.2, 0.2), hsl(160, 84, 39), 0.03, 0.4)))),
+              Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: blob(const Alignment(-0.6, -0.6), Brand.navy, 0.05, 0.5)))),
+              Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: blob(const Alignment(0.6, 0.6), Brand.green, 0.05, 0.5)))),
+              Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(gradient: blob(const Alignment(-0.2, 0.2), Brand.navyLight, 0.03, 0.4)))),
             ]),
           ),
         ),

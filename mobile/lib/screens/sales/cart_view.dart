@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../models/models.dart';
 import '../../providers/settings_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../utils/format.dart';
 import '../../widgets/common.dart';
 
 /// Empty cart state from `Cart.tsx`.
@@ -65,6 +66,7 @@ class CartView extends StatelessWidget {
     required this.onCheckout,
     required this.onCreditSale,
     this.listMaxHeight = 350,
+    this.busy = false,
   });
 
   final List<CartItem> items;
@@ -74,11 +76,14 @@ class CartView extends StatelessWidget {
   final VoidCallback onCreditSale;
   final double listMaxHeight;
 
+  /// Disables the checkout buttons while a sale is being saved.
+  final bool busy;
+
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
     final formatPrice = context.watch<SettingsProvider>().formatPrice;
-    final total = items.fold(0.0, (s, i) => s + i.subtotal);
+    final total = items.fold(0, (s, i) => s + i.subtotal);
     final itemCount = items.fold(0, (s, i) => s + i.quantity);
 
     return Container(
@@ -107,7 +112,7 @@ class CartView extends StatelessWidget {
                     color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: Text('$itemCount items',
+                  child: Text(plural(itemCount, 'item'),
                       style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Colors.white)),
                 ),
               ],
@@ -136,7 +141,7 @@ class CartView extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('Subtotal ($itemCount items)', style: TextStyle(fontSize: 14, color: p.mutedForeground)),
+                    Text('Subtotal (${plural(itemCount, 'item')})', style: TextStyle(fontSize: 14, color: p.mutedForeground)),
                     Text(formatPrice(total), style: TextStyle(fontSize: 14, color: p.mutedForeground)),
                   ],
                 ),
@@ -151,12 +156,12 @@ class CartView extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
                 AppButton(
-                  label: 'Complete Sale',
+                  label: busy ? 'Saving...' : 'Complete Sale',
                   icon: LucideIcons.receipt,
                   height: 48,
                   expand: true,
                   shadow: p.shadowMedium,
-                  onPressed: onCheckout,
+                  onPressed: busy ? null : onCheckout,
                 ),
                 const SizedBox(height: 8),
                 AppButton(
@@ -166,7 +171,7 @@ class CartView extends StatelessWidget {
                   color: p.accent,
                   height: 48,
                   expand: true,
-                  onPressed: onCreditSale,
+                  onPressed: busy ? null : onCreditSale,
                 ),
               ],
             ),
@@ -195,6 +200,8 @@ class CartItemTile extends StatelessWidget {
         color: p.secondary.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(AppRadius.xl),
       ),
+      // Buttons are 48dp, the Android minimum touch target; the line total
+      // sits under the name to leave room for them on narrow phones.
       child: Row(
         children: [
           Expanded(
@@ -206,35 +213,39 @@ class CartItemTile extends StatelessWidget {
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: p.foreground)),
                 Text('${formatPrice(item.product.price)} each',
                     style: TextStyle(fontSize: 12, color: p.mutedForeground)),
+                const SizedBox(height: 2),
+                Text(formatPrice(item.subtotal),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: p.primary)),
               ],
             ),
           ),
           AppIconButton(
             icon: LucideIcons.minus,
-            size: 32,
+            size: 48,
             color: p.foreground,
+            tooltip: 'Decrease quantity',
             onPressed: item.quantity <= 1 ? null : () => onUpdateQuantity(id, item.quantity - 1),
           ),
           SizedBox(
             width: 32,
             child: Text('${item.quantity}',
                 textAlign: TextAlign.center,
+                semanticsLabel: 'Quantity ${item.quantity}',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: p.foreground)),
           ),
           AppIconButton(
             icon: LucideIcons.plus,
-            size: 32,
+            size: 48,
             color: p.foreground,
+            tooltip: 'Increase quantity',
             onPressed: () => onUpdateQuantity(id, item.quantity + 1),
           ),
-          const SizedBox(width: 8),
-          ConstrainedBox(
-            constraints: const BoxConstraints(minWidth: 70),
-            child: Text(formatPrice(item.subtotal),
-                textAlign: TextAlign.right,
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: p.primary)),
+          AppIconButton(
+            icon: LucideIcons.x,
+            size: 48,
+            tooltip: 'Remove ${item.product.name}',
+            onPressed: () => onRemove(id),
           ),
-          AppIconButton(icon: LucideIcons.x, size: 32, onPressed: () => onRemove(id)),
         ],
       ),
     );

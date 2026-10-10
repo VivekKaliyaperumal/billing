@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -8,23 +9,16 @@ import 'format.dart';
 /// Mobile stand-in for the web app's `window.print()`: renders the receipt
 /// (same content as the dialog) and opens the system print sheet.
 Future<void> printReceipt(Sale sale, AppSettings settings) async {
-  pw.Font? font;
-  pw.Font? bold;
-  try {
-    // Needed for ₹ / € / £, which the built-in PDF font lacks.
-    font = await PdfGoogleFonts.interRegular();
-    bold = await PdfGoogleFonts.interBold();
-  } catch (_) {
-    // Offline: fall back to the built-in font and currency code.
-  }
-  final symbol = font != null ? settings.currencySymbol : '${settings.currency} ';
-  String price(double v) => '$symbol${formatIndian(v)}';
+  // Bundled Inter covers ₹ / € / £, which the built-in PDF font lacks.
+  final font = pw.Font.ttf(await rootBundle.load('assets/fonts/Inter-Regular.ttf'));
+  final bold = pw.Font.ttf(await rootBundle.load('assets/fonts/Inter-Bold.ttf'));
+  String price(int v) => '${settings.currencySymbol}${formatIndian(v)}';
 
   final doc = pw.Document();
   doc.addPage(
     pw.Page(
       pageFormat: PdfPageFormat.roll80,
-      theme: font != null ? pw.ThemeData.withFont(base: font, bold: bold) : null,
+      theme: pw.ThemeData.withFont(base: font, bold: bold),
       build: (_) => pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.stretch,
         children: [

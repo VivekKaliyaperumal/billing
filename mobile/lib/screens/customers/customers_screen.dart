@@ -7,6 +7,7 @@ import '../../providers/customer_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/format.dart';
+import '../../utils/money.dart';
 import '../../widgets/app_dialog.dart';
 import '../../widgets/common.dart';
 import '../../widgets/toast.dart';
@@ -23,12 +24,45 @@ class _CustomersScreenState extends State<CustomersScreen> {
   String _query = '';
   String? _expanded;
 
-  void _openAddCustomer() {
-    showAppDialog<void>(context, (_) => const _AddCustomerDialog());
+  Future<void> _openAddCustomer() {
+    return showAppDialog<void>(context, (_) => const _CustomerFormDialog(), dismissible: false);
   }
 
-  void _openPayment(String customerId) {
-    showAppDialog<void>(context, (_) => _PaymentDialog(customerId: customerId));
+  Future<void> _openEdit(Customer customer) {
+    return showAppDialog<void>(context, (_) => _CustomerFormDialog(customer: customer), dismissible: false);
+  }
+
+  Future<void> _confirmDelete(Customer customer) {
+    return showAppDialog<void>(
+      context,
+      (dialogCtx) => AppDialog(
+        showClose: false,
+        title: const Text('Delete Customer?'),
+        description: Text('Delete "${customer.name}" and their transaction history? This cannot be undone.'),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 24),
+          child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            AppButton(label: 'Cancel', variant: ButtonVariant.outline, onPressed: () => Navigator.of(dialogCtx).pop()),
+            const SizedBox(width: 8),
+            AppButton(
+              label: 'Delete',
+              variant: ButtonVariant.destructive,
+              onPressed: () async {
+                Navigator.of(dialogCtx).pop();
+                final deleted = await context.read<CustomerProvider>().deleteCustomer(customer.id);
+                if (deleted && mounted) {
+                  showToast(context, title: 'Customer deleted', description: '${customer.name} has been removed.');
+                }
+              },
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPayment(String customerId) {
+    return showAppDialog<void>(context, (_) => _PaymentDialog(customerId: customerId), dismissible: false);
   }
 
   @override
@@ -52,7 +86,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
               gradient: p.gradientAccent,
               shadow: p.shadowAccent,
               title: 'Customers',
-              subtitle: '${customers.length} registered customers',
+              subtitle: plural(customers.length, 'registered customer'),
               action: AppButton(
                 label: 'Add Customer',
                 icon: LucideIcons.plus,
@@ -76,7 +110,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 Text(formatPrice(provider.totalPendingAmount),
                     style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: p.accent)),
                 const SizedBox(height: 4),
-                Text('$withDues customers with dues', style: TextStyle(fontSize: 14, color: p.mutedForeground)),
+                Text('${plural(withDues, 'customer')} with dues', style: TextStyle(fontSize: 14, color: p.mutedForeground)),
               ]),
             ),
             const SizedBox(height: 32),
@@ -104,6 +138,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     formatPrice: formatPrice,
                     onToggle: () => setState(() => _expanded = _expanded == c.id ? null : c.id),
                     onPay: () => _openPayment(c.id),
+                    onEdit: () => _openEdit(c),
+                    onDelete: () => _confirmDelete(c),
                   ),
                 ),
           ],
@@ -120,13 +156,17 @@ class _CustomerCard extends StatelessWidget {
     required this.formatPrice,
     required this.onToggle,
     required this.onPay,
+    required this.onEdit,
+    required this.onDelete,
   });
 
   final Customer customer;
   final bool expanded;
-  final String Function(double) formatPrice;
+  final String Function(int) formatPrice;
   final VoidCallback onToggle;
   final VoidCallback onPay;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -137,9 +177,9 @@ class _CustomerCard extends StatelessWidget {
       leftBorderColor: hasDues ? p.accent : null,
       padding: const EdgeInsets.all(16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
+        PressScale(
           onTap: onToggle,
+          semanticLabel: '${customer.name}, ${expanded ? 'hide' : 'show'} details',
           child: Row(children: [
             Container(
               width: 48,
@@ -187,8 +227,26 @@ class _CustomerCard extends StatelessWidget {
               icon: LucideIcons.creditCard,
               variant: ButtonVariant.outline,
               color: p.success,
-              height: 36,
+              height: 44,
               onPressed: onPay,
+            ),
+          ]),
+        ],
+        if (expanded) ...[
+          const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            AppButton(label: 'Edit', icon: LucideIcons.squarePen, variant: ButtonVariant.outline, height: 44, onPressed: onEdit),
+            const SizedBox(width: 8),
+            Tooltip(
+              message: hasDues ? 'Clear the pending amount before deleting' : 'Delete customer',
+              child: AppButton(
+                label: 'Delete',
+                icon: LucideIcons.trash2,
+                variant: ButtonVariant.outline,
+                color: p.destructive,
+                height: 44,
+                onPressed: hasDues ? null : onDelete,
+              ),
             ),
           ]),
         ],
@@ -238,16 +296,19 @@ class _CustomerCard extends StatelessWidget {
   }
 }
 
-class _AddCustomerDialog extends StatefulWidget {
-  const _AddCustomerDialog();
+/// Adds a customer, or edits one when [customer] is given.
+class _CustomerFormDialog extends StatefulWidget {
+  const _CustomerFormDialog({this.customer});
+  final Customer? customer;
 
   @override
-  State<_AddCustomerDialog> createState() => _AddCustomerDialogState();
+  State<_CustomerFormDialog> createState() => _CustomerFormDialogState();
 }
 
-class _AddCustomerDialogState extends State<_AddCustomerDialog> {
-  final _name = TextEditingController();
-  final _phone = TextEditingController();
+class _CustomerFormDialogState extends State<_CustomerFormDialog> {
+  late final _name = TextEditingController(text: widget.customer?.name ?? '');
+  late final _phone = TextEditingController(text: widget.customer?.phone ?? '');
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -256,20 +317,33 @@ class _AddCustomerDialogState extends State<_AddCustomerDialog> {
     super.dispose();
   }
 
-  void _submit() {
-    final name = _name.text;
-    if (name.trim().isEmpty || _phone.text.trim().isEmpty) {
-      showToast(context, title: 'Error', description: 'Please fill all fields', destructive: true);
+  Future<void> _submit() async {
+    if (_saving) return;
+    final customers = context.read<CustomerProvider>();
+    final editing = widget.customer;
+    final error = customers.validateDetails(_name.text, _phone.text, excludingId: editing?.id);
+    if (error != null) {
+      showToast(context, title: 'Error', description: error, destructive: true);
       return;
     }
-    context.read<CustomerProvider>().addCustomer(name: name, phone: _phone.text);
+    setState(() => _saving = true);
+    final saved = editing != null
+        ? await customers.updateDetails(editing.id, name: _name.text, phone: _phone.text)
+        : (await customers.addCustomer(name: _name.text, phone: _phone.text)) != null;
+    if (!mounted) return;
+    if (!saved) {
+      setState(() => _saving = false);
+      return;
+    }
     Navigator.of(context).pop();
-    showToast(context, title: 'Customer added', description: '$name has been added.');
+    showToast(context,
+        title: editing != null ? 'Customer updated' : 'Customer added',
+        description: '${_name.text.trim()} has been ${editing != null ? 'updated' : 'added'}.');
   }
 
   @override
   Widget build(BuildContext context) => AppDialog(
-        title: const Text('Add New Customer'),
+        title: Text(widget.customer != null ? 'Edit Customer' : 'Add New Customer'),
         child: Padding(
           padding: const EdgeInsets.only(top: 16),
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -282,7 +356,12 @@ class _AddCustomerDialogState extends State<_AddCustomerDialog> {
               keyboardType: TextInputType.phone,
             ),
             const SizedBox(height: 16),
-            AppButton(label: 'Add Customer', expand: true, onPressed: _submit),
+            AppButton(
+              label: _saving ? 'Saving...' : (widget.customer != null ? 'Save Changes' : 'Add Customer'),
+              expand: true,
+              height: 48,
+              onPressed: _saving ? null : _submit,
+            ),
           ]),
         ),
       );
@@ -298,6 +377,7 @@ class _PaymentDialog extends StatefulWidget {
 
 class _PaymentDialogState extends State<_PaymentDialog> {
   final _amount = TextEditingController();
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -305,14 +385,29 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     super.dispose();
   }
 
-  void _submit() {
-    final amount = double.tryParse(_amount.text);
+  Future<void> _submit() async {
+    if (_saving) return;
+    final customers = context.read<CustomerProvider>();
+    final formatPrice = context.read<SettingsProvider>().formatPrice;
+    final pending = customers.byId(widget.customerId)?.pendingAmount ?? 0;
+    final amount = parseAmount(_amount.text);
     if (amount == null || amount <= 0) {
       showToast(context, title: 'Error', description: 'Please enter a valid amount', destructive: true);
       return;
     }
-    context.read<CustomerProvider>().addPayment(widget.customerId, amount, 'Payment received');
-    final formatted = context.read<SettingsProvider>().formatPrice(amount);
+    if (amount > pending) {
+      showToast(context,
+          title: 'Error', description: 'Amount is more than the pending ${formatPrice(pending)}', destructive: true);
+      return;
+    }
+    setState(() => _saving = true);
+    final saved = await customers.addPayment(widget.customerId, amount, 'Payment received');
+    if (!mounted) return;
+    if (!saved) {
+      setState(() => _saving = false);
+      return;
+    }
+    final formatted = formatPrice(amount);
     Navigator.of(context).pop();
     showToast(context, title: 'Payment recorded', description: 'Payment of $formatted received.');
   }
@@ -320,11 +415,15 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
+    final pending = context.watch<CustomerProvider>().byId(widget.customerId)?.pendingAmount ?? 0;
+    final formatPrice = context.watch<SettingsProvider>().formatPrice;
     return AppDialog(
       title: const Text('Record Payment'),
       child: Padding(
         padding: const EdgeInsets.only(top: 16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Text('Pending: ${formatPrice(pending)}', style: TextStyle(fontSize: 14, color: p.mutedForeground)),
+          const SizedBox(height: 12),
           AppTextField(
             label: 'Payment Amount',
             controller: _amount,
@@ -333,11 +432,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
           ),
           const SizedBox(height: 16),
           AppButton(
-            label: 'Record Payment',
+            label: _saving ? 'Saving...' : 'Record Payment',
             icon: LucideIcons.creditCard,
             gradient: p.gradientSuccess,
             expand: true,
-            onPressed: _submit,
+            height: 48,
+            onPressed: _saving ? null : _submit,
           ),
         ]),
       ),

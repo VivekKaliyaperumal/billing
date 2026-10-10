@@ -5,14 +5,18 @@ import 'package:provider/provider.dart';
 import '../../models/models.dart';
 import '../../providers/settings_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../utils/money.dart';
+import '../../utils/validation.dart';
 import '../../widgets/app_dialog.dart';
 import '../../widgets/common.dart';
 
-/// Port of `src/components/admin/ProductForm.tsx`, same validation messages.
+/// Port of `src/components/admin/ProductForm.tsx`, with stricter validation.
 class ProductFormDialog extends StatefulWidget {
   const ProductFormDialog({super.key, this.product, required this.onSubmit});
   final Product? product;
-  final void Function(String name, double price, int stock, String? image) onSubmit;
+  /// [price] is in minor units. Returns true once saved; the dialog stays
+  /// open if saving failed.
+  final Future<bool> Function(String name, int price, int stock, String? image) onSubmit;
 
   @override
   State<ProductFormDialog> createState() => _ProductFormDialogState();
@@ -20,13 +24,11 @@ class ProductFormDialog extends StatefulWidget {
 
 class _ProductFormDialogState extends State<ProductFormDialog> {
   late final _name = TextEditingController(text: widget.product?.name ?? '');
-  late final _price = TextEditingController(text: widget.product != null ? _num(widget.product!.price) : '');
+  late final _price = TextEditingController(text: widget.product != null ? amountToInput(widget.product!.price) : '');
   late final _stock = TextEditingController(text: widget.product?.stock.toString() ?? '');
   late final _image = TextEditingController(text: widget.product?.image ?? '');
   Map<String, String> _errors = {};
-
-  // JS `price.toString()`: 60 -> "60", 60.5 -> "60.5".
-  static String _num(double v) => v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -39,31 +41,42 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
 
   bool _validate() {
     final e = <String, String>{};
-    final name = _name.text;
-    if (name.trim().isEmpty) {
+    final name = _name.text.trim();
+    if (name.isEmpty) {
       e['name'] = 'Product name is required';
-    } else if (name.length > 100) {
-      e['name'] = 'Name must be less than 100 characters';
+    } else if (name.length > maxNameLength) {
+      e['name'] = 'Name must be less than $maxNameLength characters';
     }
-    final price = double.tryParse(_price.text);
-    if (price == null || price <= 0) e['price'] = 'Enter a valid price greater than 0';
-    final stock = int.tryParse(_stock.text);
-    if (stock == null || stock < 0) e['stock'] = 'Enter a valid stock quantity (0 or more)';
-    if (_image.text.length > 500) e['image'] = 'Image URL must be less than 500 characters';
+    final price = parseAmount(_price.text);
+    if (price == null || price <= 0) e['price'] = 'Enter a valid price greater than 0 (max 2 decimals)';
+    final stock = int.tryParse(_stock.text.trim());
+    if (stock == null || stock < 0 || stock > maxStock) e['stock'] = 'Enter a stock quantity from 0 to $maxStock';
+    final image = _image.text.trim();
+    if (image.length > maxImageUrlLength) {
+      e['image'] = 'Image URL must be less than $maxImageUrlLength characters';
+    } else if (image.isNotEmpty && !isValidImageUrl(image)) {
+      e['image'] = 'Image URL must start with https://';
+    }
     setState(() => _errors = e);
     return e.isEmpty;
   }
 
-  void _submit() {
-    if (!_validate()) return;
+  Future<void> _submit() async {
+    if (_saving || !_validate()) return;
+    setState(() => _saving = true);
     final image = _image.text.trim();
-    widget.onSubmit(
+    final saved = await widget.onSubmit(
       _name.text.trim(),
-      double.parse(_price.text),
-      int.parse(_stock.text),
+      parseAmount(_price.text)!,
+      int.parse(_stock.text.trim()),
       image.isEmpty ? null : image,
     );
-    Navigator.of(context).pop();
+    if (!mounted) return;
+    if (saved) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _saving = false);
+    }
   }
 
   @override
@@ -138,10 +151,10 @@ class _ProductFormDialogState extends State<ProductFormDialog> {
               const SizedBox(width: 12),
               Expanded(
                 child: AppButton(
-                  label: editing ? 'Save Changes' : 'Add Product',
+                  label: _saving ? 'Saving...' : (editing ? 'Save Changes' : 'Add Product'),
                   height: 48,
                   expand: true,
-                  onPressed: _submit,
+                  onPressed: _saving ? null : _submit,
                 ),
               ),
             ]),

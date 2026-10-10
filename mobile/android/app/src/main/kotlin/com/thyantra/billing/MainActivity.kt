@@ -1,4 +1,4 @@
-package com.smartagro.billing_mobile
+package com.thyantra.billing
 
 import io.flutter.embedding.android.FlutterActivity
 

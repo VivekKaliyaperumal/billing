@@ -1,5 +1,7 @@
 // Data models ported from `src/types/product.ts`.
-// JSON shape matches what the web app writes to localStorage.
+// All amounts are integer minor units (paise, cents); see utils/money.dart.
+
+import '../utils/money.dart';
 
 class Product {
   Product({
@@ -14,13 +16,15 @@ class Product {
 
   final String id;
   final String name;
-  final double price;
+
+  /// Unit price in minor units.
+  final int price;
   final int stock;
   final String? image;
   final int usageCount;
   final DateTime createdAt;
 
-  Product copyWith({String? name, double? price, int? stock, String? Function()? image, int? usageCount}) => Product(
+  Product copyWith({String? name, int? price, int? stock, String? Function()? image, int? usageCount}) => Product(
         id: id,
         name: name ?? this.name,
         price: price ?? this.price,
@@ -33,7 +37,7 @@ class Product {
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
-        'price': price,
+        'priceMinor': price,
         'stock': stock,
         if (image != null) 'image': image,
         'usageCount': usageCount,
@@ -43,7 +47,7 @@ class Product {
   factory Product.fromJson(Map<String, dynamic> j) => Product(
         id: j['id'] as String,
         name: j['name'] as String,
-        price: (j['price'] as num).toDouble(),
+        price: readAmount(j, 'priceMinor', 'price'),
         stock: (j['stock'] as num).toInt(),
         image: j['image'] as String?,
         usageCount: (j['usageCount'] as num).toInt(),
@@ -58,7 +62,7 @@ class CartItem {
   final Product product;
   final int quantity;
 
-  double get subtotal => product.price * quantity;
+  int get subtotal => product.price * quantity;
 
   CartItem copyWith({int? quantity}) => CartItem(product: product, quantity: quantity ?? this.quantity);
 
@@ -82,7 +86,9 @@ class Sale {
 
   final String id;
   final List<CartItem> items;
-  final double total;
+
+  /// Sale total in minor units.
+  final int total;
   final DateTime date;
   final String? customerId;
   final bool? isPending;
@@ -92,7 +98,7 @@ class Sale {
   Map<String, dynamic> toJson() => {
         'id': id,
         'items': items.map((i) => i.toJson()).toList(),
-        'total': total,
+        'totalMinor': total,
         'date': date.toIso8601String(),
         if (customerId != null) 'customerId': customerId,
         if (isPending != null) 'isPending': isPending,
@@ -101,7 +107,7 @@ class Sale {
   factory Sale.fromJson(Map<String, dynamic> j) => Sale(
         id: j['id'] as String,
         items: (j['items'] as List).map((e) => CartItem.fromJson(e as Map<String, dynamic>)).toList(),
-        total: (j['total'] as num).toDouble(),
+        total: readAmount(j, 'totalMinor', 'total'),
         date: DateTime.parse(j['date'] as String),
         customerId: j['customerId'] as String?,
         isPending: j['isPending'] as bool?,
@@ -121,7 +127,9 @@ class CustomerTransaction {
   });
 
   final String id;
-  final double amount;
+
+  /// Amount in minor units.
+  final int amount;
   final TransactionType type;
   final String description;
   final DateTime date;
@@ -129,7 +137,7 @@ class CustomerTransaction {
 
   Map<String, dynamic> toJson() => {
         'id': id,
-        'amount': amount,
+        'amountMinor': amount,
         'type': type.name,
         'description': description,
         'date': date.toIso8601String(),
@@ -138,7 +146,7 @@ class CustomerTransaction {
 
   factory CustomerTransaction.fromJson(Map<String, dynamic> j) => CustomerTransaction(
         id: j['id'] as String,
-        amount: (j['amount'] as num).toDouble(),
+        amount: readAmount(j, 'amountMinor', 'amount'),
         type: TransactionType.values.byName(j['type'] as String),
         description: j['description'] as String,
         date: DateTime.parse(j['date'] as String),
@@ -159,14 +167,17 @@ class Customer {
   final String id;
   final String name;
   final String phone;
-  final double pendingAmount;
+
+  /// Outstanding credit in minor units.
+  final int pendingAmount;
   final DateTime createdAt;
   final List<CustomerTransaction> transactions;
 
-  Customer copyWith({double? pendingAmount, List<CustomerTransaction>? transactions}) => Customer(
+  Customer copyWith({String? name, String? phone, int? pendingAmount, List<CustomerTransaction>? transactions}) =>
+      Customer(
         id: id,
-        name: name,
-        phone: phone,
+        name: name ?? this.name,
+        phone: phone ?? this.phone,
         pendingAmount: pendingAmount ?? this.pendingAmount,
         createdAt: createdAt,
         transactions: transactions ?? this.transactions,
@@ -176,7 +187,7 @@ class Customer {
         'id': id,
         'name': name,
         'phone': phone,
-        'pendingAmount': pendingAmount,
+        'pendingMinor': pendingAmount,
         'createdAt': createdAt.toIso8601String(),
         'transactions': transactions.map((t) => t.toJson()).toList(),
       };
@@ -185,7 +196,7 @@ class Customer {
         id: j['id'] as String,
         name: j['name'] as String,
         phone: j['phone'] as String,
-        pendingAmount: (j['pendingAmount'] as num).toDouble(),
+        pendingAmount: readAmount(j, 'pendingMinor', 'pendingAmount'),
         createdAt: DateTime.parse(j['createdAt'] as String),
         transactions: (j['transactions'] as List)
             .map((e) => CustomerTransaction.fromJson(e as Map<String, dynamic>))
@@ -200,7 +211,7 @@ class AppSettings {
   final String currencySymbol;
   final String shopName;
 
-  static const defaults = AppSettings(currency: 'INR', currencySymbol: '₹', shopName: 'ShopEase');
+  static const defaults = AppSettings(currency: 'INR', currencySymbol: '₹', shopName: 'My Shop');
 
   Map<String, dynamic> toJson() => {'currency': currency, 'currencySymbol': currencySymbol, 'shopName': shopName};
 

@@ -1,7 +1,4 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/models.dart';
 import '../utils/format.dart';
@@ -12,7 +9,7 @@ class MonthlySalesData {
   final String month; // short month name, e.g. "Oct"
   final int year;
   final int monthNum; // 0-based, like JS getMonth()
-  double total;
+  int total; // minor units
   int count;
 
   /// Select value used by the web app: "year-month" with 0-based month.
@@ -23,29 +20,28 @@ class ProductSalesData {
   ProductSalesData(this.productName, {this.quantity = 0, this.revenue = 0});
   final String productName;
   int quantity;
-  double revenue;
+  int revenue; // minor units
 }
 
-/// Port of `src/context/SalesHistoryContext.tsx`.
+/// Sales history. Sales are written by [CheckoutService]; this provider
+/// mirrors them in memory for the reports.
 class SalesHistoryProvider extends ChangeNotifier {
-  SalesHistoryProvider(this._prefs) {
-    final stored = _prefs.getString(storageKey);
-    _sales = stored != null
-        ? (jsonDecode(stored) as List).map((e) => Sale.fromJson(e as Map<String, dynamic>)).toList()
-        : [];
-  }
+  SalesHistoryProvider(List<Sale> initial) : _sales = List.of(initial);
 
-  static const storageKey = 'shop_sales_history';
-
-  final SharedPreferences _prefs;
-  late List<Sale> _sales;
+  List<Sale> _sales;
 
   /// Newest first.
   List<Sale> get sales => List.unmodifiable(_sales);
 
-  void addSale(Sale sale) {
+  /// Mirrors a sale the database has already recorded.
+  void applySale(Sale sale) {
     _sales = [sale, ..._sales];
-    _prefs.setString(storageKey, jsonEncode(_sales.map((s) => s.toJson()).toList()));
+    notifyListeners();
+  }
+
+  /// Replaces everything after a restore that has already been saved.
+  void replaceAll(List<Sale> sales) {
+    _sales = List.of(sales)..sort((a, b) => b.date.compareTo(a.date));
     notifyListeners();
   }
 
@@ -73,13 +69,15 @@ class SalesHistoryProvider extends ChangeNotifier {
 
   List<ProductSalesData> getTopProductsAllTime([int limit = 5]) => _aggregate(_sales, limit);
 
+  /// Groups by product id so a renamed product keeps one entry; it is shown
+  /// under its most recent name (sales are newest first).
   static List<ProductSalesData> _aggregate(Iterable<Sale> sales, int limit) {
     final data = <String, ProductSalesData>{};
     for (final sale in sales) {
       for (final item in sale.items) {
-        final p = data.putIfAbsent(item.product.name, () => ProductSalesData(item.product.name));
+        final p = data.putIfAbsent(item.product.id, () => ProductSalesData(item.product.name));
         p.quantity += item.quantity;
-        p.revenue += item.product.price * item.quantity;
+        p.revenue += item.subtotal;
       }
     }
     final list = data.values.toList()..sort((a, b) => b.quantity.compareTo(a.quantity));

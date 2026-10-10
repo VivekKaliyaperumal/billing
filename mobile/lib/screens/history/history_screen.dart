@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -20,9 +22,46 @@ class HistoryScreen extends StatefulWidget {
   State<HistoryScreen> createState() => _HistoryScreenState();
 }
 
-class _HistoryScreenState extends State<HistoryScreen> {
+class _HistoryScreenState extends State<HistoryScreen> with WidgetsBindingObserver {
   String _dateFilter = '30d';
   String _selectedMonth = 'all';
+
+  // The tab stays alive in the background, so "Today"/"Yesterday" and the
+  // date ranges are refreshed at midnight and when the app is reopened.
+  Timer? _midnight;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scheduleMidnight();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _midnight?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      setState(() {});
+      _scheduleMidnight();
+    }
+  }
+
+  void _scheduleMidnight() {
+    _midnight?.cancel();
+    final now = DateTime.now();
+    final next = DateTime(now.year, now.month, now.day + 1);
+    _midnight = Timer(next.difference(now) + const Duration(seconds: 1), () {
+      if (!mounted) return;
+      setState(() {});
+      _scheduleMidnight();
+    });
+  }
 
   static bool _sameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
 
@@ -46,8 +85,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final todays = sales.where((s) => _sameDay(s.date, now)).toList();
     final yesterdays = sales.where((s) => _sameDay(s.date, now.subtract(const Duration(days: 1)))).toList();
     final filtered = _filtered(history);
-    final totalRevenue = filtered.fold(0.0, (s, x) => s + x.total);
-    final avgOrder = filtered.isNotEmpty ? totalRevenue / filtered.length : 0.0;
+    final totalRevenue = filtered.fold(0, (s, x) => s + x.total);
+    final avgOrder = filtered.isNotEmpty ? (totalRevenue / filtered.length).round() : 0;
 
     MonthlySalesData? best = monthly.isEmpty ? null : monthly.first;
     for (final m in monthly) {
@@ -73,7 +112,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               gradient: p.gradientHero,
               shadow: p.shadowGlow,
               title: 'Sales History',
-              subtitle: '${sales.length} total transactions',
+              subtitle: plural(sales.length, 'total transaction'),
               action: Row(mainAxisSize: MainAxisSize.min, children: [
                 AppSelect<String>(
                   value: _dateFilter,
@@ -282,12 +321,12 @@ class _DayCard extends StatelessWidget {
   final IconData icon;
   final Color color;
   final List<Sale> sales;
-  final String Function(double) formatPrice;
+  final String Function(int) formatPrice;
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    final total = sales.fold(0.0, (s, x) => s + x.total);
+    final total = sales.fold(0, (s, x) => s + x.total);
     return AppCard(
       gradient: LinearGradient(
         begin: Alignment.topLeft,
@@ -309,7 +348,7 @@ class _DayCard extends StatelessWidget {
           Expanded(
             child: Text(formatPrice(total), style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: color)),
           ),
-          Text('${sales.length} orders', style: TextStyle(fontSize: 14, color: p.mutedForeground)),
+          Text(plural(sales.length, 'order'), style: TextStyle(fontSize: 14, color: p.mutedForeground)),
         ]),
         if (sales.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -365,7 +404,7 @@ class _MonthlyChart extends StatelessWidget {
   const _MonthlyChart({required this.data, required this.symbol, required this.formatPrice});
   final List<MonthlySalesData> data;
   final String symbol;
-  final String Function(double) formatPrice;
+  final String Function(int) formatPrice;
 
   @override
   Widget build(BuildContext context) {
@@ -379,8 +418,8 @@ class _MonthlyChart extends StatelessWidget {
           for (var i = 0; i < data.length; i++)
             BarChartGroupData(x: i, barRods: [
               BarChartRodData(
-                toY: data[i].total,
-                color: hsl(262, 83, 58),
+                toY: data[i].total / 100, // chart axis in major units
+                color: p.primary,
                 width: data.length > 6 ? 16 : 32,
                 borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
               ),
@@ -421,7 +460,7 @@ class _MonthlyChart extends StatelessWidget {
               '${data[group.x].month}\n',
               TextStyle(color: p.foreground, fontWeight: FontWeight.w500),
               children: [
-                TextSpan(text: 'Revenue : ${formatPrice(rod.toY)}', style: TextStyle(color: hsl(262, 83, 58))),
+                TextSpan(text: 'Revenue : ${formatPrice(data[group.x].total)}', style: TextStyle(color: p.primary)),
               ],
             ),
           ),
@@ -434,7 +473,7 @@ class _MonthlyChart extends StatelessWidget {
 class _TransactionsTable extends StatelessWidget {
   const _TransactionsTable({required this.sales, required this.formatPrice});
   final List<Sale> sales;
-  final String Function(double) formatPrice;
+  final String Function(int) formatPrice;
 
   @override
   Widget build(BuildContext context) {

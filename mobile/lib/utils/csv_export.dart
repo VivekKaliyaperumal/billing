@@ -5,16 +5,26 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/models.dart';
 import 'format.dart';
+import 'money.dart';
 
-/// Same CSV as the web History page's "Export CSV".
+/// Same columns as the web History page's "Export CSV".
 String buildSalesCsv(List<Sale> sales) => [
-      ['Date', 'Items', 'Total'].join(','),
+      ['Date', 'Items', 'Total'].map(csvField).join(','),
       ...sales.map((s) => [
             dateCsv.format(s.date),
             s.items.map((i) => '${i.product.name} x${i.quantity}').join('; '),
-            s.total.toStringAsFixed(2),
-          ].join(',')),
-    ].join('\n');
+            amountToPlain(s.total),
+          ].map(csvField).join(',')),
+    ].join('\r\n');
+
+/// Escapes one CSV field (RFC 4180) and neutralises spreadsheet formulas, so
+/// a product named `=HYPERLINK(...)` cannot run when the file is opened.
+String csvField(String value) {
+  var v = value;
+  if (v.isNotEmpty && '=+-@\t\r'.contains(v[0])) v = "'$v";
+  if (v.contains(RegExp('[",\r\n]'))) v = '"${v.replaceAll('"', '""')}"';
+  return v;
+}
 
 /// Writes the CSV to a temp file and opens the share sheet
 /// (mobile stand-in for the browser download).

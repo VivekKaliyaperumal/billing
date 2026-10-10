@@ -12,8 +12,8 @@ import '../../widgets/common.dart';
 /// sale was recorded, which closes the dialog.
 class CreditSaleDialog extends StatefulWidget {
   const CreditSaleDialog({super.key, required this.total, required this.onConfirm});
-  final double total;
-  final bool Function(String? customerId, String name, String phone) onConfirm;
+  final int total; // minor units
+  final Future<bool> Function(String? customerId, String name, String phone) onConfirm;
 
   @override
   State<CreditSaleDialog> createState() => _CreditSaleDialogState();
@@ -21,6 +21,7 @@ class CreditSaleDialog extends StatefulWidget {
 
 class _CreditSaleDialogState extends State<CreditSaleDialog> {
   String? _customerId;
+  bool _saving = false;
   final _name = TextEditingController();
   final _phone = TextEditingController();
 
@@ -29,6 +30,17 @@ class _CreditSaleDialogState extends State<CreditSaleDialog> {
     _name.dispose();
     _phone.dispose();
     super.dispose();
+  }
+
+  Future<void> _confirm() async {
+    setState(() => _saving = true);
+    final close = await widget.onConfirm(_customerId, _name.text, _phone.text);
+    if (!mounted) return;
+    if (close) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() => _saving = false);
+    }
   }
 
   @override
@@ -51,13 +63,27 @@ class _CreditSaleDialogState extends State<CreditSaleDialog> {
           children: [
             const FieldLabel('Select Existing Customer'),
             const SizedBox(height: 8),
-            AppSelect<String>(
-              value: _customerId,
-              height: 48,
-              placeholder: 'Choose customer',
-              options: [for (final c in customers) SelectOption(c.id, '${c.name} - ${c.phone}')],
-              onChanged: (v) => setState(() => _customerId = v),
-            ),
+            Row(children: [
+              Expanded(
+                child: AppSelect<String>(
+                  value: _customerId,
+                  height: 48,
+                  placeholder: 'Choose customer',
+                  options: [for (final c in customers) SelectOption(c.id, '${c.name} - ${c.phone}')],
+                  onChanged: (v) => setState(() => _customerId = v),
+                ),
+              ),
+              if (locked) ...[
+                const SizedBox(width: 8),
+                AppIconButton(
+                  icon: LucideIcons.x,
+                  size: 48,
+                  outlined: true,
+                  tooltip: 'Clear selected customer',
+                  onPressed: () => setState(() => _customerId = null),
+                ),
+              ],
+            ]),
             const SizedBox(height: 16),
             Row(children: [
               Expanded(child: Divider(color: p.border)),
@@ -78,16 +104,12 @@ class _CreditSaleDialogState extends State<CreditSaleDialog> {
             ),
             const SizedBox(height: 16),
             AppButton(
-              label: 'Confirm Credit Sale',
               gradient: p.gradientAccent,
               shadow: p.shadowAccent,
               height: 48,
               expand: true,
-              onPressed: () {
-                if (widget.onConfirm(_customerId, _name.text, _phone.text)) {
-                  Navigator.of(context).pop();
-                }
-              },
+              label: _saving ? 'Saving...' : 'Confirm Credit Sale',
+              onPressed: _saving ? null : _confirm,
             ),
           ],
         ),

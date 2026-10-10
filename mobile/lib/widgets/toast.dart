@@ -100,12 +100,10 @@ class _ToastState extends State<_Toast> with SingleTickerProviderStateMixin {
                       ],
                     ),
                   ),
-                  GestureDetector(
-                    onTap: _close,
-                    child: Padding(
-                      padding: const EdgeInsets.all(4),
-                      child: Icon(LucideIcons.x, size: 16, color: fg.withValues(alpha: 0.6)),
-                    ),
+                  IconButton(
+                    tooltip: 'Dismiss',
+                    onPressed: _close,
+                    icon: Icon(LucideIcons.x, size: 16, color: fg.withValues(alpha: 0.6)),
                   ),
                 ],
               ),

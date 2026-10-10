@@ -1,14 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/app_database.dart';
 import '../../models/models.dart';
 import '../../providers/cart_provider.dart';
 import '../../providers/customer_provider.dart';
 import '../../providers/product_provider.dart';
 import '../../providers/sales_history_provider.dart';
 import '../../providers/settings_provider.dart';
+import '../../services/checkout_service.dart';
 import '../../theme/app_theme.dart';
+import '../../utils/format.dart';
 import '../../widgets/app_dialog.dart';
 import '../../widgets/common.dart';
 import '../../widgets/toast.dart';
@@ -29,6 +34,10 @@ class SalesScreen extends StatefulWidget {
 class _SalesScreenState extends State<SalesScreen> {
   static const _wideBreakpoint = 900.0;
   String _query = '';
+
+  /// True while a sale is being saved; blocks a second tap from
+  /// recording the same cart twice.
+  bool _busy = false;
 
   void _selectProduct(Product product) {
     final current = context.read<ProductProvider>().byId(product.id);
@@ -55,47 +64,82 @@ class _SalesScreenState extends State<SalesScreen> {
 
   void _showReceipt(Sale sale) => showAppDialog<void>(context, (_) => ReceiptDialog(sale: sale));
 
-  void _checkout() {
-    final cart = context.read<CartProvider>();
-    if (cart.isEmpty) return;
-    final sale = context.read<ProductProvider>().completeSale(cart.items);
-    context.read<SalesHistoryProvider>().addSale(sale);
-    cart.clear();
-    _showReceipt(sale);
+  CheckoutService get _checkoutService => CheckoutService(
+        db: context.read<AppDatabase>(),
+        cart: context.read<CartProvider>(),
+        products: context.read<ProductProvider>(),
+        history: context.read<SalesHistoryProvider>(),
+        customers: context.read<CustomerProvider>(),
+      );
+
+  void _showCartChanged(List<String> changes) {
     showToast(context,
-        title: 'Sale completed!', description: 'Total: ${context.read<SettingsProvider>().formatPrice(sale.total)}');
+        title: 'Cart updated - please review', description: changes.join('\n'), destructive: true);
   }
 
-  void _creditSale() {
+  Future<T> _whileBusy<T>(Future<T> Function() action) async {
+    setState(() => _busy = true);
+    try {
+      return await action();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _checkout() async {
+    if (_busy || context.read<CartProvider>().isEmpty) return;
+    final result = await _whileBusy(_checkoutService.checkout);
+    if (!mounted) return;
+    switch (result) {
+      case CheckoutCompleted(:final sale):
+        _showReceipt(sale);
+        showToast(context,
+            title: 'Sale completed!', description: 'Total: ${context.read<SettingsProvider>().formatPrice(sale.total)}');
+      case CheckoutCartChanged(:final changes):
+        _showCartChanged(changes);
+      case CheckoutCustomerError() || CheckoutFailed():
+        break; // Customer errors can't occur for cash; save failures are already shown.
+    }
+  }
+
+  Future<void> _creditSale() async {
     final cart = context.read<CartProvider>();
     if (cart.isEmpty) return;
-    showAppDialog<void>(
+    await showAppDialog<void>(
       context,
       (_) => CreditSaleDialog(total: cart.total, onConfirm: _confirmCreditSale),
+      dismissible: false,
     );
   }
 
-  bool _confirmCreditSale(String? selectedId, String name, String phone) {
-    final customers = context.read<CustomerProvider>();
-    var customerId = selectedId;
-    if (customerId == null && name.isNotEmpty && phone.isNotEmpty) {
-      customerId = customers.addCustomer(name: name, phone: phone).id;
+  /// Returns true when the dialog should close: the sale was recorded, or
+  /// the cart changed and must be reviewed before trying again.
+  Future<bool> _confirmCreditSale(String? selectedId, String name, String phone) async {
+    if (_busy) return false;
+    final result = await _whileBusy(
+      () => _checkoutService.creditCheckout(selectedId: selectedId, name: name, phone: phone),
+    );
+    if (!mounted) return false;
+    switch (result) {
+      case CheckoutCompleted(:final sale):
+        // Open the receipt once the credit dialog has closed, then the toast
+        // on top of it.
+        final message = '${context.read<SettingsProvider>().formatPrice(sale.total)} added to customer credit';
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _showReceipt(sale);
+          showToast(context, title: 'Credit sale recorded', description: message);
+        });
+        return true;
+      case CheckoutCartChanged(:final changes):
+        _showCartChanged(changes);
+        return true;
+      case CheckoutCustomerError(:final message):
+        showToast(context, title: 'Error', description: message, destructive: true);
+        return false;
+      case CheckoutFailed():
+        return false;
     }
-    if (customerId == null) {
-      showToast(context, title: 'Error', description: 'Please select or add a customer', destructive: true);
-      return false;
-    }
-    final cart = context.read<CartProvider>();
-    final sale = context.read<ProductProvider>().completeSale(cart.items, customerId: customerId, isPending: true);
-    context.read<SalesHistoryProvider>().addSale(sale);
-    customers.addCredit(customerId, sale.total, 'Sale #${sale.id.substring(0, 8)}', saleId: sale.id);
-    cart.clear();
-    // Open the receipt once the credit dialog has closed.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _showReceipt(sale));
-    showToast(context,
-        title: 'Credit sale recorded',
-        description: '${context.read<SettingsProvider>().formatPrice(sale.total)} added to customer credit');
-    return true;
   }
 
   Widget _cart({double listMaxHeight = 350}) {
@@ -104,6 +148,7 @@ class _SalesScreenState extends State<SalesScreen> {
     return CartView(
       items: cart.items,
       listMaxHeight: listMaxHeight,
+      busy: _busy,
       onUpdateQuantity: _updateQuantity,
       onRemove: context.read<CartProvider>().remove,
       onCheckout: _checkout,
@@ -111,8 +156,8 @@ class _SalesScreenState extends State<SalesScreen> {
     );
   }
 
-  void _openCartSheet() {
-    showModalBottomSheet<void>(
+  Future<void> _openCartSheet() {
+    return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -120,8 +165,13 @@ class _SalesScreenState extends State<SalesScreen> {
       builder: (sheetCtx) => Consumer<CartProvider>(
         builder: (_, cart, _) {
           if (cart.isEmpty) {
+            // Close only if this sheet is still the top route: after checkout
+            // the receipt dialog may already be on top, and a plain pop()
+            // would close the receipt instead.
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (Navigator.of(sheetCtx).canPop()) Navigator.of(sheetCtx).pop();
+              if (!sheetCtx.mounted) return;
+              final route = ModalRoute.of(sheetCtx);
+              if (route != null && route.isCurrent) Navigator.of(sheetCtx).pop();
             });
             return const SizedBox.shrink();
           }
@@ -135,11 +185,11 @@ class _SalesScreenState extends State<SalesScreen> {
                 onRemove: cart.remove,
                 onCheckout: () {
                   Navigator.of(sheetCtx).pop();
-                  _checkout();
+                  unawaited(_checkout());
                 },
                 onCreditSale: () {
                   Navigator.of(sheetCtx).pop();
-                  _creditSale();
+                  unawaited(_creditSale());
                 },
               ),
             ),
@@ -246,7 +296,7 @@ class _SalesScreenState extends State<SalesScreen> {
 class _CartBar extends StatelessWidget {
   const _CartBar({required this.itemCount, required this.total, required this.onTap});
   final int itemCount;
-  final double total;
+  final int total;
   final VoidCallback onTap;
 
   @override
@@ -274,7 +324,7 @@ class _CartBar extends StatelessWidget {
               color: Colors.white.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(999),
             ),
-            child: Text('$itemCount items',
+            child: Text(plural(itemCount, 'item'),
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.white)),
           ),
           const Spacer(),

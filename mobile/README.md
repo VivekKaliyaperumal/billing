@@ -1,44 +1,58 @@
-# Billing App – Flutter mobile
+# Thyantra Billing (Android)
 
-Flutter port of the React billing (POS) web app in this repo. The UI and behaviour match the web app; it is frontend only, with no backend.
+Offline point-of-sale for small shops: billing, stock, customer credit, sales reports. Published by Thyantra Technologies. No backend: all data stays on the phone.
 
-## Run
+- Package: `com.thyantra.billing`
+- Play Store listing, Data safety answers and graphics: [docs/play-store/LISTING.md](docs/play-store/LISTING.md)
+- Privacy policy: https://thyantra.com/billing-privacy-policy (page lives in the `thyantra` website repo)
+
+## Run and test
 
 ```sh
-cd mobile
 flutter pub get
-flutter run            # on a connected Android/iOS device or emulator
-flutter test           # unit tests for cart, stock, credit, currency, history, CSV
+flutter run                                   # device or emulator
+flutter analyze                               # strict lints; must be clean
+flutter test                                  # logic suite on the desktop VM (in-memory SQLite)
+flutter test integration_test -d <device-id>  # same suite on Android with real SQLite
 ```
 
-## Data
+On machines where Windows Application Control blocks `flutter_tester.exe`, run the integration command against an emulator instead; it covers the same 21 tests.
 
-Data is stored on the device with `shared_preferences`, using the same keys as the web app's localStorage:
+## Release
 
-| Key | Contents |
-|---|---|
-| `shop_products` | products |
-| `shop_sales_history` | sales history |
-| `shop_customers` | customers |
-| `shop_settings` | shop name and currency |
-| `shop-ui-theme` | light or dark theme |
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create_upload_keystore.ps1   # once
+powershell -ExecutionPolicy Bypass -File scripts\build_release.ps1            # every release
+```
 
-On first launch only the 8 default products are loaded.
+- The keystore script asks for the password (never stored in the repo), writes the keystore to `%USERPROFILE%\.thyantra-keys\` and `android/key.properties` (git-ignored). **Back up both.**
+- Release builds refuse to run without `key.properties`; nothing is ever debug-signed.
+- The build script runs analyze + tests, then builds an obfuscated, R8-minified app bundle. Keep `build/symbols` per release for crash stack traces.
+- Bump `version:` in `pubspec.yaml` (the `+N` build number) for every upload.
 
-## Layout
+## Architecture
 
-| Folder | Contents |
-|---|---|
-| `lib/theme/` | design tokens copied from `src/index.css`, in light and dark |
-| `lib/models/` | ported from `src/types/product.ts` |
-| `lib/providers/` | ported from the React contexts in `src/context/` |
-| `lib/screens/` | Sales, Products, History, Customers, Settings |
-| `lib/widgets/` | shared shadcn-style button, card, dialog, select and toast |
+| Layer | Files | Notes |
+|---|---|---|
+| Storage | `lib/data/app_database.dart` | SQLite (sqflite). Multi-row operations run in one transaction; stock and balances are guarded in SQL so they can't go negative. |
+| State | `lib/providers/` | In-memory mirrors of the database. They change only **after** a write succeeds. |
+| Use cases | `lib/services/checkout_service.dart`, `backup_service.dart` | Checkout: reconcile cart with inventory, resolve customer, save sale, stock and credit atomically. Backup: JSON export/restore with strict validation of the (untrusted) file. |
+| UI | `lib/screens/`, `lib/widgets/`, `lib/shell/` | Thyantra theme (`lib/theme/`), bundled Inter and Sora fonts, 48dp touch targets, screen-reader labels. |
+| Helpers | `lib/utils/` | `money.dart` (integer minor units), `validation.dart`, `csv_export.dart` (RFC 4180 + formula-injection safe), `receipt_pdf.dart`. |
 
-## Mobile adaptations
+### Data rules
 
-- **Navigation:** a bottom navigation bar instead of the web top nav.
-- **Cart:** a floating "Current Sale" bar that opens the cart sheet. On screens 900px or wider, the cart sits beside the product grid as on the web.
-- **Print:** generates the receipt as a PDF and opens the system print sheet (the web app uses `window.print()`).
-- **Export CSV:** produces the same CSV as the web app and opens the share sheet.
-- **Product edit/delete:** the buttons are always visible, because a phone has no hover.
+- **Money** is always an `int` in minor units (paise/cents), so totals never drift. User input goes through `parseAmount`, which rejects NaN, exponents, negatives, more than 2 decimals and amounts over ₹1 crore.
+- **Phone numbers** are normalised (spaces/dashes removed) and unique per customer.
+- **Customers** with a pending balance can't be deleted; payments can't exceed the balance.
+- **Product images** must be `https://`. Cleartext traffic is disabled in the manifest.
+- **Legacy data** from the earlier SharedPreferences storage is imported once on first launch, cleaned up (negative stock clamped, duplicate phones merged), then removed. Unreadable records are skipped and kept under `<key>_corrupt_<timestamp>`.
+- **Settings and theme** remain in SharedPreferences (`shop_settings`, `shop-ui-theme`).
+
+### Privacy and network
+
+No analytics, ads, crash reporting or accounts. The only network use is loading product images from URLs the user enters. Fonts are bundled, so nothing is fetched at runtime.
+
+## Branding
+
+Icons are generated from `assets/branding/` (logo from the Thyantra website): `dart run flutter_launcher_icons`. Colours are in `lib/theme/app_theme.dart` (`Brand`).

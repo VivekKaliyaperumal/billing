@@ -4,9 +4,12 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../theme/app_theme.dart';
 
 /// Opens a shadcn-style dialog with the fade + scale-in (0.95 → 1) animation.
-Future<T?> showAppDialog<T>(BuildContext context, WidgetBuilder builder) => showGeneralDialog<T>(
+/// Pass `dismissible: false` for forms, so a stray tap outside the dialog
+/// doesn't throw away what was typed.
+Future<T?> showAppDialog<T>(BuildContext context, WidgetBuilder builder, {bool dismissible = true}) =>
+    showGeneralDialog<T>(
       context: context,
-      barrierDismissible: true,
+      barrierDismissible: dismissible,
       barrierLabel: 'Close',
       barrierColor: Colors.black.withValues(alpha: 0.8),
       transitionDuration: const Duration(milliseconds: 200),
@@ -77,10 +80,10 @@ class AppDialog extends StatelessWidget {
                   ),
                   if (showClose)
                     Positioned(
-                      right: 12,
-                      top: 12,
+                      right: 4,
+                      top: 4,
                       child: IconButton(
-                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Close',
                         icon: Icon(LucideIcons.x, size: 16, color: p.foreground.withValues(alpha: 0.7)),
                         onPressed: () => Navigator.of(context).pop(),
                       ),
