@@ -1,16 +1,21 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Store, ShoppingCart, Package, BarChart3, Settings, Users } from 'lucide-react';
+import { Store, ShoppingCart, Package, BarChart3, Settings, Users, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSettings } from '@/context/SettingsContext';
+import { useAuth } from '@/context/AuthContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export function Header() {
   const location = useLocation();
   const { settings } = useSettings();
+  const { user, isOwner, signOut } = useAuth();
 
   const navItems = [
     { path: '/', label: 'Sales', icon: ShoppingCart },
-    { path: '/admin', label: 'Products', icon: Package },
+    // Product management is for the owner.
+    ...(isOwner ? [{ path: '/admin', label: 'Products', icon: Package }] : []),
     { path: '/history', label: 'History', icon: BarChart3 },
     { path: '/customers', label: 'Customers', icon: Users },
     { path: '/settings', label: 'Settings', icon: Settings },
@@ -45,6 +50,16 @@ export function Header() {
             ))}
           </nav>
           <ThemeToggle />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Sign out {user ? `${user.name} (${isOwner ? 'Owner' : 'Cashier'})` : ''}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </header>

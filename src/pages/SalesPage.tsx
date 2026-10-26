@@ -5,21 +5,22 @@ import { Button } from '@/components/ui/button';
 import { ProductCard } from '@/components/products/ProductCard';
 import { Cart } from '@/components/sales/Cart';
 import { SaleReceipt } from '@/components/sales/SaleReceipt';
-import { useProducts } from '@/context/ProductContext';
-import { useSalesHistory } from '@/context/SalesHistoryContext';
+import { CreditCustomer, useProducts } from '@/context/ProductContext';
 import { useCustomers } from '@/context/CustomerContext';
 import { useSettings } from '@/context/SettingsContext';
-import { CartItem, Product, Sale, Customer } from '@/types/product';
+import { CartItem, Product, Sale } from '@/types/product';
 import { toast } from '@/hooks/use-toast';
+import { ApiError, errorMessage } from '@/lib/api/client';
+import { CartChange } from '@/lib/api/types';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function SalesPage() {
-  const { getMostUsedProducts, searchProducts, completeSale, products } = useProducts();
-  const { addSale } = useSalesHistory();
-  const { customers, addCredit, addCustomer } = useCustomers();
+  const { getMostUsedProducts, searchProducts, checkout, refreshProducts, products } = useProducts();
+  const { customers } = useCustomers();
   const { formatPrice } = useSettings();
+  const [busy, setBusy] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -90,15 +91,53 @@ export default function SalesPage() {
     setCartItems(prev => prev.filter(item => item.product.id !== productId));
   };
 
-  const handleCheckout = () => {
-    if (cartItems.length === 0) return;
-    
-    const sale = completeSale(cartItems);
-    addSale(sale);
+  /**
+   * The server refused the cart because inventory changed (another counter
+   * sold the stock, a price was edited, a product was removed). Bring the
+   * cart in line with current inventory and let the cashier confirm again.
+   */
+  const repairCart = async (changes: CartChange[]) => {
+    const latest = await refreshProducts().catch(() => products);
+    setCartItems(prev =>
+      prev.flatMap(item => {
+        const current = latest.find(p => p.id === item.product.id);
+        if (!current || current.stock <= 0) return [];
+        return [{ product: current, quantity: Math.min(item.quantity, current.stock) }];
+      })
+    );
+    toast({
+      title: 'Cart updated — please review',
+      description: changes.map(c => c.message).join('. '),
+      variant: 'destructive',
+    });
+  };
+
+  /** Runs a checkout; returns null if nothing was sold. */
+  const runCheckout = async (customer?: CreditCustomer): Promise<Sale | null> => {
+    setBusy(true);
+    try {
+      return await checkout(cartItems, customer);
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'cart_changed') {
+        await repairCart((e.details.changes as CartChange[] | undefined) ?? []);
+      } else {
+        toast({ title: 'Sale not recorded', description: errorMessage(e), variant: 'destructive' });
+      }
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCheckout = async () => {
+    if (cartItems.length === 0 || busy) return;
+
+    const sale = await runCheckout();
+    if (!sale) return;
     setLastSale(sale);
     setShowReceipt(true);
     setCartItems([]);
-    
+
     toast({
       title: 'Sale completed!',
       description: `Total: ${formatPrice(sale.total)}`,
@@ -110,23 +149,24 @@ export default function SalesPage() {
     setShowCreditDialog(true);
   };
 
-  const handleConfirmCreditSale = () => {
-    let customerId = selectedCustomerId;
-    
-    if (!customerId && newCustomerName && newCustomerPhone) {
-      const newCustomer = addCustomer({ name: newCustomerName, phone: newCustomerPhone });
-      customerId = newCustomer.id;
+  const handleConfirmCreditSale = async () => {
+    if (busy) return;
+    let customer: CreditCustomer | undefined;
+    if (selectedCustomerId) {
+      customer = { id: selectedCustomerId };
+    } else if (newCustomerName.trim() && newCustomerPhone.trim()) {
+      customer = { name: newCustomerName.trim(), phone: newCustomerPhone.trim() };
     }
-    
-    if (!customerId) {
+
+    if (!customer) {
       toast({ title: 'Error', description: 'Please select or add a customer', variant: 'destructive' });
       return;
     }
 
-    const sale = completeSale(cartItems, customerId, true);
-    addSale(sale);
-    addCredit(customerId, sale.total, `Sale #${sale.id.slice(0, 8)}`, sale.id);
-    
+    // Sale, stock, new customer and credit are saved together on the server.
+    const sale = await runCheckout(customer);
+    if (!sale) return;
+
     setLastSale(sale);
     setShowReceipt(true);
     setCartItems([]);
@@ -134,7 +174,7 @@ export default function SalesPage() {
     setSelectedCustomerId('');
     setNewCustomerName('');
     setNewCustomerPhone('');
-    
+
     toast({
       title: 'Credit sale recorded',
       description: `${formatPrice(sale.total)} added to customer credit`,
@@ -260,8 +300,9 @@ export default function SalesPage() {
               />
             </div>
 
-            <Button 
-              onClick={handleConfirmCreditSale} 
+            <Button
+              onClick={handleConfirmCreditSale}
+              disabled={busy}
               className="w-full h-12 gradient-accent text-accent-foreground shadow-glow-accent"
             >
               Confirm Credit Sale

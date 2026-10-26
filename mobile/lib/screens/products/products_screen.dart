@@ -3,6 +3,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/models.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/product_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../theme/app_theme.dart';
@@ -15,6 +16,7 @@ import 'product_form_dialog.dart';
 
 /// Port of `src/pages/AdminPage.tsx` + `ProductTable.tsx`. The web table
 /// becomes a list on mobile; edit/delete are always visible (no hover).
+/// Signed in as a cashier, products are view-only: the owner manages stock.
 class ProductsScreen extends StatefulWidget {
   const ProductsScreen({super.key});
 
@@ -88,6 +90,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
   Widget build(BuildContext context) {
     final p = context.palette;
     final all = context.watch<ProductProvider>().products;
+    final canEdit = context.watch<AuthProvider>().isOwner;
     final filtered = _query.isNotEmpty
         ? all.where((x) => x.name.toLowerCase().contains(_query.toLowerCase())).toList()
         : all;
@@ -103,13 +106,15 @@ class _ProductsScreenState extends State<ProductsScreen> {
               gradient: p.gradientPrimary,
               title: 'Product Management',
               subtitle: '${plural(all.length, 'product')} in inventory',
-              action: AppButton(
-                label: 'Add Product',
-                icon: LucideIcons.plus,
-                height: 44,
-                shadow: p.shadowMedium,
-                onPressed: _openForm,
-              ),
+              action: canEdit
+                  ? AppButton(
+                      label: 'Add Product',
+                      icon: LucideIcons.plus,
+                      height: 44,
+                      shadow: p.shadowMedium,
+                      onPressed: _openForm,
+                    )
+                  : null,
             ),
             const SizedBox(height: 32),
             AppSearchField(hint: 'Search products...', onChanged: (v) => setState(() => _query = v)),
@@ -131,7 +136,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
                 ]),
               )
             else
-              _ProductList(products: filtered, onEdit: _openForm, onDelete: _confirmDelete),
+              _ProductList(products: filtered, canEdit: canEdit, onEdit: _openForm, onDelete: _confirmDelete),
           ],
         ),
       ),
@@ -140,8 +145,9 @@ class _ProductsScreenState extends State<ProductsScreen> {
 }
 
 class _ProductList extends StatelessWidget {
-  const _ProductList({required this.products, required this.onEdit, required this.onDelete});
+  const _ProductList({required this.products, required this.canEdit, required this.onEdit, required this.onDelete});
   final List<Product> products;
+  final bool canEdit;
   final ValueChanged<Product> onEdit;
   final ValueChanged<Product> onDelete;
 
@@ -163,7 +169,7 @@ class _ProductList extends StatelessWidget {
               const SizedBox(width: 60),
               Expanded(child: Text('Product Name', style: head)),
               Text('Price / Stock', style: head),
-              const SizedBox(width: 104), // edit + delete buttons
+              if (canEdit) const SizedBox(width: 104), // edit + delete buttons
             ]),
           ),
           for (var i = 0; i < products.length; i++) ...[
@@ -197,18 +203,20 @@ class _ProductList extends StatelessWidget {
                     _StockPill(stock: products[i].stock),
                   ],
                 ),
-                const SizedBox(width: 8),
-                AppIconButton(
-                  icon: LucideIcons.squarePen,
-                  tooltip: 'Edit ${products[i].name}',
-                  onPressed: () => onEdit(products[i]),
-                ),
-                AppIconButton(
-                  icon: LucideIcons.trash2,
-                  tooltip: 'Delete ${products[i].name}',
-                  onPressed: () => onDelete(products[i]),
-                  color: p.mutedForeground,
-                ),
+                if (canEdit) ...[
+                  const SizedBox(width: 8),
+                  AppIconButton(
+                    icon: LucideIcons.squarePen,
+                    tooltip: 'Edit ${products[i].name}',
+                    onPressed: () => onEdit(products[i]),
+                  ),
+                  AppIconButton(
+                    icon: LucideIcons.trash2,
+                    tooltip: 'Delete ${products[i].name}',
+                    onPressed: () => onDelete(products[i]),
+                    color: p.mutedForeground,
+                  ),
+                ],
               ]),
             ),
           ],

@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/models.dart';
+import '../models/sync_models.dart';
 import '../utils/storage.dart';
 import '../utils/validation.dart';
 
@@ -31,18 +33,35 @@ class ShopData {
 /// SQLite storage. Every operation that touches more than one row runs in a
 /// single transaction, so a sale, its stock changes and any customer credit
 /// are saved together or not at all.
+///
+/// While signed in ([syncEnabled]), each write also queues an outbox op in
+/// the same transaction, so a change is never saved without being queued
+/// for the server, or queued without being saved.
 class AppDatabase {
   AppDatabase._(this._db);
 
   final Database _db;
 
   static const fileName = 'thyantra_billing.db';
-  static const _schemaVersion = 1;
+  static const _schemaVersion = 2;
+  static const _uuid = Uuid();
 
   // Keys used by the previous SharedPreferences storage, imported once.
   static const _legacyProducts = 'shop_products';
   static const _legacySales = 'shop_sales_history';
   static const _legacyCustomers = 'shop_customers';
+
+  // sync_state keys.
+  static const _cursorKey = 'cursor';
+  static const _lastSyncedKey = 'last_synced_at';
+  static const _shopKey = 'shop_id';
+  static const _deviceKey = 'device_id';
+
+  /// Set by the sync service while a user is signed in.
+  bool syncEnabled = false;
+
+  /// Called after a write that queued an op, so sync can run soon.
+  void Function()? onLocalWrite;
 
   /// Opens (creating on first launch) the database. On creation, data from
   /// the earlier SharedPreferences storage is imported, or the starter
@@ -63,8 +82,12 @@ class AppDatabase {
         onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
         onCreate: (db, _) async {
           await _createSchema(db);
+          await _createSyncSchema(db);
           imported = await _importLegacy(db, prefs);
           if (!imported) await _seedProducts(db);
+        },
+        onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 2) await _createSyncSchema(db);
         },
       ),
     );
@@ -121,6 +144,22 @@ class AppDatabase {
     await db.execute('CREATE INDEX transactions_customer ON customer_transactions (customer_id)');
   }
 
+  /// Version 2: changes waiting to be sent, and sync bookkeeping.
+  static Future<void> _createSyncSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE outbox (
+        op_id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )''');
+    await db.execute('''
+      CREATE TABLE sync_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )''');
+  }
+
   static Future<bool> _importLegacy(DatabaseExecutor db, SharedPreferences prefs) async {
     final products = readJsonList(prefs, _legacyProducts, Product.fromJson);
     final sales = readJsonList(prefs, _legacySales, Sale.fromJson);
@@ -147,6 +186,9 @@ class AppDatabase {
           c.copyWith(phone: normalizePhone(c.phone), pendingAmount: c.pendingAmount < 0 ? 0 : c.pendingAmount),
     ];
   }
+
+  /// Ids of the starter products added to a brand-new install.
+  static const starterProductIds = {'1', '2', '3', '4', '5', '6', '7', '8'};
 
   static Future<void> _seedProducts(DatabaseExecutor db) async {
     final now = DateTime.now();
@@ -206,12 +248,45 @@ class AppDatabase {
 
   // --------------------------------------------------------------- writes
 
-  Future<void> insertProduct(Product product) => _db.insert('products', _productRow(product));
+  /// Runs [body] in a transaction, then tells sync that ops may be waiting.
+  Future<T> _write<T>(Future<T> Function(Transaction txn) body) async {
+    final result = await _db.transaction(body);
+    if (syncEnabled) onLocalWrite?.call();
+    return result;
+  }
 
-  Future<void> updateProduct(Product product) =>
-      _db.update('products', _productRow(product), where: 'id = ?', whereArgs: [product.id]);
+  /// Queues an op for the server inside the caller's transaction.
+  Future<void> _enqueue(DatabaseExecutor txn, String type, Map<String, Object?> payload) async {
+    if (!syncEnabled) return;
+    await txn.insert('outbox', {
+      'op_id': _uuid.v4(),
+      'type': type,
+      'payload': jsonEncode(payload),
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
 
-  Future<void> deleteProduct(String id) => _db.delete('products', where: 'id = ?', whereArgs: [id]);
+  /// Queues an op that has no local table, e.g. a settings change.
+  Future<void> enqueue(String type, Map<String, Object?> payload) => _write((txn) => _enqueue(txn, type, payload));
+
+  Future<void> insertProduct(Product product) => _write((txn) async {
+        await txn.insert('products', _productRow(product));
+        await _enqueue(txn, 'product.upsert', _productOp(product));
+      });
+
+  /// Sends the stock the edit started from, so the server applies the
+  /// difference and keeps sales made on other devices meanwhile.
+  Future<void> updateProduct(Product product) => _write((txn) async {
+        final before = await txn.query('products', columns: ['stock'], where: 'id = ?', whereArgs: [product.id]);
+        await txn.update('products', _productRow(product), where: 'id = ?', whereArgs: [product.id]);
+        final baseStock = before.isEmpty ? null : before.first['stock']! as int;
+        await _enqueue(txn, 'product.upsert', _productOp(product, baseStock: baseStock));
+      });
+
+  Future<void> deleteProduct(String id) => _write((txn) async {
+        await txn.delete('products', where: 'id = ?', whereArgs: [id]);
+        await _enqueue(txn, 'product.delete', {'id': id});
+      });
 
   /// Records a sale in one transaction: decrements stock (refusing to go
   /// below zero), stores the sale and, for a credit sale, adds the customer
@@ -222,7 +297,7 @@ class AppDatabase {
     String? creditCustomerId,
     CustomerTransaction? credit,
   }) {
-    return _db.transaction((txn) async {
+    return _write((txn) async {
       for (final item in sale.items) {
         final updated = await txn.rawUpdate(
           'UPDATE products SET stock = stock - ?, usage_count = usage_count + ? WHERE id = ? AND stock >= ?',
@@ -240,33 +315,70 @@ class AppDatabase {
         );
         if (updated != 1) throw const ConflictException('Customer not found');
       }
+      if (!syncEnabled) return;
+      if (newCustomer != null) await _enqueue(txn, 'customer.create', _customerOp(newCustomer));
+      final customerId = creditCustomerId ?? sale.customerId;
+      Map<String, Object?>? customer;
+      if (customerId != null) {
+        // Lets the server recreate the customer if it no longer has them.
+        final rows = await txn.query('customers', columns: ['name', 'phone'], where: 'id = ?', whereArgs: [customerId]);
+        if (rows.isNotEmpty) customer = {'name': rows.first['name'], 'phone': rows.first['phone']};
+      }
+      await _enqueue(txn, 'sale.create', {
+        'id': sale.id,
+        'date': toServerDate(sale.date),
+        'items': [
+          for (final i in sale.items)
+            {'productId': i.product.id, 'name': i.product.name, 'priceMinor': i.product.price, 'quantity': i.quantity},
+        ],
+        'customerId': customerId,
+        'customer': customer,
+        'credit': credit == null
+            ? null
+            : {'id': credit.id, 'description': credit.description, 'date': toServerDate(credit.date)},
+      });
     });
   }
 
-  Future<void> insertCustomer(Customer customer) => _db.insert('customers', _customerRow(customer));
+  Future<void> insertCustomer(Customer customer) => _write((txn) async {
+        await txn.insert('customers', _customerRow(customer));
+        await _enqueue(txn, 'customer.create', _customerOp(customer));
+      });
 
   Future<void> updateCustomerDetails(String id, {required String name, required String phone}) =>
-      _db.update('customers', {'name': name, 'phone': phone}, where: 'id = ?', whereArgs: [id]);
+      _write((txn) async {
+        await txn.update('customers', {'name': name, 'phone': phone}, where: 'id = ?', whereArgs: [id]);
+        await _enqueue(txn, 'customer.update', {'id': id, 'name': name, 'phone': phone});
+      });
 
   /// Deletes a customer with no outstanding balance, with their history.
-  Future<void> deleteCustomer(String id) async {
-    final deleted = await _db.delete('customers', where: 'id = ? AND pending_minor = 0', whereArgs: [id]);
-    if (deleted != 1) throw const ConflictException('Customer still has a pending balance');
-  }
+  Future<void> deleteCustomer(String id) => _write((txn) async {
+        final deleted = await txn.delete('customers', where: 'id = ? AND pending_minor = 0', whereArgs: [id]);
+        if (deleted != 1) throw const ConflictException('Customer still has a pending balance');
+        await _enqueue(txn, 'customer.delete', {'id': id});
+      });
 
   /// Records a payment, refusing to take the balance below zero.
   Future<void> recordPayment(String customerId, CustomerTransaction payment) {
-    return _db.transaction((txn) async {
+    return _write((txn) async {
       final updated = await txn.rawUpdate(
         'UPDATE customers SET pending_minor = pending_minor - ? WHERE id = ? AND pending_minor >= ?',
         [payment.amount, customerId, payment.amount],
       );
       if (updated != 1) throw const ConflictException('Payment is more than the pending amount');
       await txn.insert('customer_transactions', _transactionRow(customerId, payment));
+      await _enqueue(txn, 'payment.create', {
+        'id': payment.id,
+        'customerId': customerId,
+        'amountMinor': payment.amount,
+        'description': payment.description,
+        'date': toServerDate(payment.date),
+      });
     });
   }
 
-  /// Replaces all data (restore from backup) in one transaction.
+  /// Replaces all data (restore from backup) in one transaction. Nothing is
+  /// queued: a restore while signed in goes to the server first.
   Future<void> replaceAll(ShopData data) {
     return _db.transaction((txn) async {
       await txn.delete('customer_transactions');
@@ -277,7 +389,186 @@ class AppDatabase {
     });
   }
 
+  // ----------------------------------------------------------------- sync
+
+  /// Oldest first.
+  Future<List<OutboxOp>> pendingOps(int limit) async {
+    final rows = await _db.query('outbox', orderBy: 'rowid', limit: limit);
+    return [
+      for (final r in rows)
+        OutboxOp(
+          opId: r['op_id']! as String,
+          type: r['type']! as String,
+          payload: jsonDecode(r['payload']! as String) as Map<String, dynamic>,
+        ),
+    ];
+  }
+
+  Future<int> pendingCount() async => Sqflite.firstIntValue(await _db.rawQuery('SELECT COUNT(*) FROM outbox')) ?? 0;
+
+  Future<void> removeOps(Iterable<String> opIds) {
+    return _db.transaction((txn) async {
+      for (final id in opIds) {
+        await txn.delete('outbox', where: 'op_id = ?', whereArgs: [id]);
+      }
+    });
+  }
+
+  /// Saves a download from the server in one transaction. Refuses (returns
+  /// false) while local changes are still waiting to be sent, because the
+  /// download would overwrite them; sync pushes first and tries again.
+  Future<bool> applyPull(PullPage page) {
+    return _db.transaction((txn) async {
+      final pending = Sqflite.firstIntValue(await txn.rawQuery('SELECT COUNT(*) FROM outbox')) ?? 0;
+      if (pending > 0) return false;
+      if (page.reset) {
+        await txn.delete('customer_transactions');
+        await txn.delete('customers');
+        await txn.delete('sales');
+        await txn.delete('products');
+      }
+      for (final id in page.deletedProducts) {
+        await txn.delete('products', where: 'id = ?', whereArgs: [id]);
+      }
+      for (final x in page.products.values) {
+        await _upsert(txn, 'products', _productRow(x));
+      }
+      // Deleting a customer removes their ledger too (ON DELETE CASCADE).
+      for (final id in page.deletedCustomers) {
+        await txn.delete('customers', where: 'id = ?', whereArgs: [id]);
+      }
+      for (final c in page.customers.values) {
+        // The server is the record now; a stale local customer holding the
+        // same number would block it.
+        await txn.delete('customers', where: 'phone = ? AND id != ?', whereArgs: [c.phone, c.id]);
+        await _upsert(txn, 'customers', _customerRow(c));
+      }
+      for (final t in page.transactions.values) {
+        final owner = await txn.query('customers', columns: ['id'], where: 'id = ?', whereArgs: [t.customerId]);
+        if (owner.isEmpty) continue; // the customer was deleted
+        await _upsert(txn, 'customer_transactions', _transactionRow(t.customerId, t.transaction));
+      }
+      for (final s in page.sales.values) {
+        await _upsert(txn, 'sales', _saleRow(s));
+      }
+      return true;
+    });
+  }
+
+  /// Update, or insert if missing. Not INSERT OR REPLACE: replacing a
+  /// customer row would cascade-delete their ledger. Not UPSERT syntax:
+  /// older Android versions ship SQLite without it.
+  static Future<void> _upsert(DatabaseExecutor txn, String table, Map<String, Object?> row) async {
+    final updated = await txn.update(table, row, where: 'id = ?', whereArgs: [row['id']]);
+    if (updated == 0) await txn.insert(table, row);
+  }
+
+  /// The server merged customer [from] into [to] (the same phone was added
+  /// on two devices). Moves the ledger, sales and queued ops across.
+  Future<void> remapCustomerId(String from, String to) {
+    if (from == to) return Future.value();
+    return _db.transaction((txn) async {
+      final old = await txn.query('customers', where: 'id = ?', whereArgs: [from]);
+      if (old.isNotEmpty) {
+        final ledger = await txn.query('customer_transactions', where: 'customer_id = ?', whereArgs: [from]);
+        // Foreign keys forbid changing the id in place; delete (cascading
+        // the ledger) and re-insert under the new id.
+        await txn.delete('customers', where: 'id = ?', whereArgs: [from]);
+        final target = await txn.query('customers', columns: ['id'], where: 'id = ?', whereArgs: [to]);
+        if (target.isEmpty) {
+          await txn.insert('customers', {...old.first, 'id': to});
+        } else {
+          await txn.rawUpdate(
+            'UPDATE customers SET pending_minor = pending_minor + ? WHERE id = ?',
+            [old.first['pending_minor'], to],
+          );
+        }
+        for (final row in ledger) {
+          await txn.insert('customer_transactions', {...row, 'customer_id': to});
+        }
+      }
+      await txn.update('sales', {'customer_id': to}, where: 'customer_id = ?', whereArgs: [from]);
+      for (final row in await txn.query('outbox')) {
+        final payload = jsonDecode(row['payload']! as String) as Map<String, dynamic>;
+        var changed = false;
+        if (payload['customerId'] == from) {
+          payload['customerId'] = to;
+          changed = true;
+        }
+        if ((row['type']! as String).startsWith('customer.') && payload['id'] == from) {
+          payload['id'] = to;
+          changed = true;
+        }
+        if (changed) {
+          await txn.update('outbox', {'payload': jsonEncode(payload)}, where: 'op_id = ?', whereArgs: [row['op_id']]);
+        }
+      }
+    });
+  }
+
+  Future<String?> _getState(String key) async {
+    final rows = await _db.query('sync_state', where: 'key = ?', whereArgs: [key]);
+    return rows.isEmpty ? null : rows.first['value']! as String;
+  }
+
+  Future<void> _setState(String key, String? value) async {
+    if (value == null) {
+      await _db.delete('sync_state', where: 'key = ?', whereArgs: [key]);
+    } else {
+      await _db.insert('sync_state', {'key': key, 'value': value}, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+  }
+
+  Future<String?> getCursor() => _getState(_cursorKey);
+  Future<void> setCursor(String? cursor) => _setState(_cursorKey, cursor);
+
+  Future<DateTime?> getLastSyncedAt() async {
+    final v = await _getState(_lastSyncedKey);
+    return v == null ? null : DateTime.tryParse(v);
+  }
+
+  Future<void> setLastSyncedAt(DateTime at) => _setState(_lastSyncedKey, at.toIso8601String());
+
+  /// The shop this phone last synced with.
+  Future<String?> getSyncedShopId() => _getState(_shopKey);
+  Future<void> setSyncedShopId(String? id) => _setState(_shopKey, id);
+
+  /// Stable id for this install, sent with each push.
+  Future<String> deviceId() async {
+    final existing = await _getState(_deviceKey);
+    if (existing != null) return existing;
+    final id = _uuid.v4();
+    await _setState(_deviceKey, id);
+    return id;
+  }
+
+  /// Forgets queued ops and the sync position (sign-out, or switching to
+  /// another shop's data). The device id is kept.
+  Future<void> clearSyncState() {
+    return _db.transaction((txn) async {
+      await txn.delete('outbox');
+      await txn.delete('sync_state', where: 'key != ?', whereArgs: [_deviceKey]);
+    });
+  }
+
   // ------------------------------------------------------------- mapping
+
+  static Map<String, Object?> _productOp(Product x, {int? baseStock}) => {
+        'id': x.id,
+        'name': x.name,
+        'priceMinor': x.price,
+        'stock': x.stock,
+        'image': x.image,
+        'baseStock': ?baseStock,
+        'createdAt': toServerDate(x.createdAt),
+      };
+
+  static Map<String, Object?> _customerOp(Customer x) => {
+        'id': x.id,
+        'name': x.name,
+        'phone': x.phone,
+        'createdAt': toServerDate(x.createdAt),
+      };
 
   static Map<String, Object?> _productRow(Product x) => {
         'id': x.id,

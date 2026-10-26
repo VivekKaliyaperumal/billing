@@ -1,91 +1,91 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useCallback, ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Product, CartItem, Sale } from '@/types/product';
+import { api } from '@/lib/api/client';
+import { ApiCustomer, ApiProduct, ApiSale, toMinor, toProduct, toSale } from '@/lib/api/types';
+
+type ProductInput = { name: string; price: number; stock: number; image?: string };
+
+/** Existing customer by id, or a new one by name and phone. */
+export type CreditCustomer = { id: string } | { name: string; phone: string };
 
 interface ProductContextType {
   products: Product[];
-  addProduct: (product: Omit<Product, 'id' | 'usageCount' | 'createdAt'>) => void;
-  updateProduct: (id: string, product: Partial<Product>) => void;
-  deleteProduct: (id: string) => void;
-  completeSale: (items: CartItem[], customerId?: string, isPending?: boolean) => Sale;
+  isLoading: boolean;
+  addProduct: (product: ProductInput) => Promise<void>;
+  updateProduct: (id: string, product: Partial<ProductInput>) => Promise<void>;
+  deleteProduct: (id: string) => Promise<void>;
+  /**
+   * Records the sale on the server in one step: stock, usage counts and, for
+   * a credit sale, the customer's balance. Throws ApiError `cart_changed`
+   * (with `details.changes`) if the cart no longer matches inventory.
+   */
+  checkout: (items: CartItem[], customer?: CreditCustomer) => Promise<Sale>;
+  refreshProducts: () => Promise<Product[]>;
   getMostUsedProducts: (limit?: number) => Product[];
   searchProducts: (query: string) => Product[];
 }
 
 const ProductContext = createContext<ProductContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'shop_products';
+export const PRODUCTS_KEY = ['products'];
 
-const defaultProducts: Product[] = [
-  { id: '1', name: 'Milk 1L', price: 60, stock: 50, usageCount: 120, createdAt: new Date() },
-  { id: '2', name: 'Bread Loaf', price: 45, stock: 30, usageCount: 95, createdAt: new Date() },
-  { id: '3', name: 'Eggs (12 pack)', price: 90, stock: 25, usageCount: 88, createdAt: new Date() },
-  { id: '4', name: 'Butter 250g', price: 55, stock: 20, usageCount: 72, createdAt: new Date() },
-  { id: '5', name: 'Cheese Block', price: 150, stock: 15, usageCount: 65, createdAt: new Date() },
-  { id: '6', name: 'Orange Juice 1L', price: 80, stock: 40, usageCount: 58, createdAt: new Date() },
-  { id: '7', name: 'Yogurt 500g', price: 35, stock: 35, usageCount: 45, createdAt: new Date() },
-  { id: '8', name: 'Coffee Powder 500g', price: 250, stock: 18, usageCount: 40, createdAt: new Date() },
-];
+async function fetchProducts(): Promise<Product[]> {
+  return (await api<ApiProduct[]>('GET', '/products')).map(toProduct);
+}
+
+function toBody(p: Partial<ProductInput>) {
+  return {
+    name: p.name,
+    priceMinor: p.price === undefined ? undefined : toMinor(p.price),
+    stock: p.stock,
+    // An empty field clears the image.
+    image: p.image === undefined ? undefined : p.image || null,
+  };
+}
 
 export function ProductProvider({ children }: { children: ReactNode }) {
-  const [products, setProducts] = useState<Product[]>(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      return parsed.map((p: Product) => ({ ...p, createdAt: new Date(p.createdAt) }));
-    }
-    return defaultProducts;
-  });
+  const queryClient = useQueryClient();
+  const { data: products = [], isLoading } = useQuery({ queryKey: PRODUCTS_KEY, queryFn: fetchProducts });
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-  }, [products]);
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: PRODUCTS_KEY });
 
-  const addProduct = (product: Omit<Product, 'id' | 'usageCount' | 'createdAt'>) => {
-    const newProduct: Product = {
-      ...product,
-      id: crypto.randomUUID(),
-      usageCount: 0,
-      createdAt: new Date(),
-    };
-    setProducts(prev => [...prev, newProduct]);
+  const addProduct = async (product: ProductInput) => {
+    await api<ApiProduct>('POST', '/products', toBody(product));
+    await invalidate();
   };
 
-  const updateProduct = (id: string, updates: Partial<Product>) => {
-    setProducts(prev =>
-      prev.map(p => (p.id === id ? { ...p, ...updates } : p))
-    );
+  const updateProduct = async (id: string, updates: Partial<ProductInput>) => {
+    await api<ApiProduct>('PATCH', `/products/${encodeURIComponent(id)}`, toBody(updates));
+    await invalidate();
   };
 
-  const deleteProduct = (id: string) => {
-    setProducts(prev => prev.filter(p => p.id !== id));
+  const deleteProduct = async (id: string) => {
+    await api('DELETE', `/products/${encodeURIComponent(id)}`);
+    await invalidate();
   };
 
-  const completeSale = (items: CartItem[], customerId?: string, isPending?: boolean): Sale => {
-    const sale: Sale = {
-      id: crypto.randomUUID(),
-      items,
-      total: items.reduce((sum, item) => sum + item.product.price * item.quantity, 0),
-      date: new Date(),
-      customerId,
-      isPending,
-    };
-
-    setProducts(prev =>
-      prev.map(p => {
-        const cartItem = items.find(item => item.product.id === p.id);
-        if (cartItem) {
-          return {
-            ...p,
-            stock: p.stock - cartItem.quantity,
-            usageCount: p.usageCount + cartItem.quantity,
-          };
-        }
-        return p;
-      })
-    );
-
-    return sale;
+  const checkout = async (items: CartItem[], customer?: CreditCustomer): Promise<Sale> => {
+    const res = await api<{ sale: ApiSale; customer?: ApiCustomer }>('POST', '/sales', {
+      items: items.map((i) => ({
+        productId: i.product.id,
+        quantity: i.quantity,
+        expectedUnitPriceMinor: toMinor(i.product.price),
+      })),
+      customer,
+    });
+    await Promise.all([
+      invalidate(),
+      queryClient.invalidateQueries({ queryKey: ['sales'] }),
+      customer ? queryClient.invalidateQueries({ queryKey: ['customers'] }) : undefined,
+    ]);
+    return toSale(res.sale);
   };
+
+  const refreshProducts = useCallback(
+    () => queryClient.fetchQuery({ queryKey: PRODUCTS_KEY, queryFn: fetchProducts, staleTime: 0 }),
+    [queryClient],
+  );
 
   const getMostUsedProducts = (limit = 8): Product[] => {
     return [...products]
@@ -106,10 +106,12 @@ export function ProductProvider({ children }: { children: ReactNode }) {
     <ProductContext.Provider
       value={{
         products,
+        isLoading,
         addProduct,
         updateProduct,
         deleteProduct,
-        completeSale,
+        checkout,
+        refreshProducts,
         getMostUsedProducts,
         searchProducts,
       }}

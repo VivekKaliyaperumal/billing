@@ -3,6 +3,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/models.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/customer_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../theme/app_theme.dart';
@@ -70,6 +71,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final p = context.palette;
     final provider = context.watch<CustomerProvider>();
     final formatPrice = context.watch<SettingsProvider>().formatPrice;
+    // Only the owner deletes customers.
+    final canDelete = context.watch<AuthProvider>().isOwner;
     final customers = provider.customers;
     final q = _query.toLowerCase();
     final filtered = customers.where((c) => c.name.toLowerCase().contains(q) || c.phone.contains(_query)).toList();
@@ -139,7 +142,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     onToggle: () => setState(() => _expanded = _expanded == c.id ? null : c.id),
                     onPay: () => _openPayment(c.id),
                     onEdit: () => _openEdit(c),
-                    onDelete: () => _confirmDelete(c),
+                    onDelete: canDelete ? () => _confirmDelete(c) : null,
                   ),
                 ),
           ],
@@ -157,7 +160,7 @@ class _CustomerCard extends StatelessWidget {
     required this.onToggle,
     required this.onPay,
     required this.onEdit,
-    required this.onDelete,
+    this.onDelete,
   });
 
   final Customer customer;
@@ -166,7 +169,9 @@ class _CustomerCard extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onPay;
   final VoidCallback onEdit;
-  final VoidCallback onDelete;
+
+  /// Null hides the button (cashiers).
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -236,18 +241,20 @@ class _CustomerCard extends StatelessWidget {
           const SizedBox(height: 12),
           Row(mainAxisAlignment: MainAxisAlignment.end, children: [
             AppButton(label: 'Edit', icon: LucideIcons.squarePen, variant: ButtonVariant.outline, height: 44, onPressed: onEdit),
-            const SizedBox(width: 8),
-            Tooltip(
-              message: hasDues ? 'Clear the pending amount before deleting' : 'Delete customer',
-              child: AppButton(
-                label: 'Delete',
-                icon: LucideIcons.trash2,
-                variant: ButtonVariant.outline,
-                color: p.destructive,
-                height: 44,
-                onPressed: hasDues ? null : onDelete,
+            if (onDelete != null) ...[
+              const SizedBox(width: 8),
+              Tooltip(
+                message: hasDues ? 'Clear the pending amount before deleting' : 'Delete customer',
+                child: AppButton(
+                  label: 'Delete',
+                  icon: LucideIcons.trash2,
+                  variant: ButtonVariant.outline,
+                  color: p.destructive,
+                  height: 44,
+                  onPressed: hasDues ? null : onDelete,
+                ),
               ),
-            ),
+            ],
           ]),
         ],
         if (expanded && customer.transactions.isNotEmpty) ...[

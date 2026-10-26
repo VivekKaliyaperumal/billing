@@ -7,20 +7,25 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app_info.dart';
 import '../../data/app_database.dart';
 import '../../models/models.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
 import '../../providers/customer_provider.dart';
 import '../../providers/product_provider.dart';
 import '../../providers/sales_history_provider.dart';
 import '../../providers/settings_provider.dart';
+import '../../services/api_client.dart';
 import '../../services/backup_service.dart';
+import '../../services/sync_service.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/format.dart';
 import '../../utils/storage.dart';
 import '../../widgets/app_dialog.dart';
 import '../../widgets/common.dart';
 import '../../widgets/toast.dart';
+import 'account_section.dart';
 
-/// Shop details, currency, backup/restore and app information.
+/// Account & sync, shop details, currency, backup/restore and app
+/// information. Shop details and restore are the owner's.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -31,12 +36,33 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late final _shopName = TextEditingController(text: context.read<SettingsProvider>().settings.shopName);
   late String _currency = context.read<SettingsProvider>().settings.currency;
+  late final SettingsProvider _settingsProvider = context.read<SettingsProvider>();
+  late AppSettings _shown = _settingsProvider.settings;
   bool _working = false;
 
   @override
+  void initState() {
+    super.initState();
+    _settingsProvider.addListener(_onSettingsChanged);
+  }
+
+  @override
   void dispose() {
+    _settingsProvider.removeListener(_onSettingsChanged);
     _shopName.dispose();
     super.dispose();
+  }
+
+  /// Shows settings changed elsewhere (a sync, a restore), so a later Save
+  /// doesn't send the old values back. Theme changes leave the form alone.
+  void _onSettingsChanged() {
+    final s = _settingsProvider.settings;
+    if (identical(s, _shown) || !mounted) return;
+    setState(() {
+      _shown = s;
+      _shopName.text = s.shopName;
+      _currency = s.currency;
+    });
   }
 
   bool get _hasRecords =>
@@ -99,6 +125,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (text == null || !mounted) return;
       final backup = BackupService.decode(text);
       if (!await _confirmRestore(backup) || !mounted) return;
+      if (context.read<AuthProvider>().isSignedIn) {
+        // The shop's data is replaced first; this phone then downloads it.
+        await context.read<SyncService>().restoreToShop(backup);
+        if (!mounted) return;
+        context.read<CartProvider>().clear();
+        showToast(context, title: 'Backup restored', description: "Your shop's data has been replaced with the backup.");
+        return;
+      }
       await context.read<AppDatabase>().replaceAll(backup.data);
       if (!mounted) return;
       context.read<ProductProvider>().replaceAll(backup.data.products);
@@ -113,6 +147,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
       showToast(context, title: 'Backup restored', description: 'Your data has been replaced with the backup.');
     } on FormatException catch (e) {
+      if (mounted) showToast(context, title: 'Cannot restore', description: e.message, destructive: true);
+    } on ApiException catch (e) {
       if (mounted) showToast(context, title: 'Cannot restore', description: e.message, destructive: true);
     } catch (e) {
       reportStorageIssue('Could not restore the backup. Your existing data was not changed.', e);
@@ -155,6 +191,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final p = context.palette;
     final previewSymbol = currencies.firstWhere((c) => c.code == _currency).symbol;
+    final auth = context.watch<AuthProvider>();
+    final isOwner = auth.isOwner;
+    final storageNote = auth.isSignedIn
+        ? 'Your data is synced with your shop. A backup file is an extra copy you control; '
+            'restoring replaces the data on every phone and the website.'
+        : 'All data is kept only on this phone. Save a backup regularly, for example to Google Drive, '
+            'so nothing is lost if the phone is lost or reset.';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 32, 16, 32),
@@ -173,6 +216,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: 'Manage your shop preferences',
                 ),
                 const SizedBox(height: 32),
+                _SettingsCard(
+                  icon: LucideIcons.refreshCw,
+                  iconColor: p.accent,
+                  title: 'Account & Sync',
+                  description: "Sign in to keep this phone in step with your shop's other phones and the website.",
+                  child: const AccountPanel(),
+                ),
+                const SizedBox(height: 24),
+                // Shop details are the owner's to change.
+                if (isOwner) ...[
                 _SettingsCard(
                   icon: LucideIcons.store,
                   iconColor: p.primary,
@@ -238,13 +291,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 32),
+                ],
                 _SettingsCard(
                   icon: LucideIcons.databaseBackup,
                   iconColor: p.success,
                   title: 'Backup & Restore',
-                  description: 'All data is kept only on this phone. Save a backup regularly, for example to Google Drive, '
-                      'so nothing is lost if the phone is lost or reset. Backups include customer phone numbers: '
-                      'store them somewhere private.',
+                  description: '$storageNote Backups include customer phone numbers: store them somewhere private.',
                   child: Wrap(spacing: 12, runSpacing: 12, children: [
                     AppButton(
                       label: 'Save Backup',
@@ -252,13 +304,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       height: 48,
                       onPressed: _working ? null : _backup,
                     ),
-                    AppButton(
-                      label: 'Restore Backup',
-                      icon: LucideIcons.upload,
-                      variant: ButtonVariant.outline,
-                      height: 48,
-                      onPressed: _working ? null : _restore,
-                    ),
+                    if (isOwner)
+                      AppButton(
+                        label: 'Restore Backup',
+                        icon: LucideIcons.upload,
+                        variant: ButtonVariant.outline,
+                        height: 48,
+                        onPressed: _working ? null : _restore,
+                      ),
                   ]),
                 ),
                 const SizedBox(height: 24),

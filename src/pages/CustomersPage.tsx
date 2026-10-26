@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Users, Plus, Phone, CreditCard, Wallet, Search, ChevronDown, ChevronUp } from 'lucide-react';
+import { Users, Plus, Phone, CreditCard, Wallet, Search, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -7,12 +7,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { useCustomers } from '@/context/CustomerContext';
 import { useSettings } from '@/context/SettingsContext';
+import { useAuth } from '@/context/AuthContext';
 import { toast } from '@/hooks/use-toast';
+import { errorMessage } from '@/lib/api/client';
 import { cn } from '@/lib/utils';
 
 export default function CustomersPage() {
-  const { customers, addCustomer, addPayment, getTotalPendingAmount } = useCustomers();
+  const { customers, addCustomer, addPayment, deleteCustomer, getCustomerById, getTotalPendingAmount } = useCustomers();
   const { formatPrice } = useSettings();
+  const { isOwner } = useAuth();
+  const [busy, setBusy] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
@@ -28,28 +32,60 @@ export default function CustomersPage() {
     c.phone.includes(searchQuery)
   );
 
-  const handleAddCustomer = () => {
+  const handleAddCustomer = async () => {
     if (!newName.trim() || !newPhone.trim()) {
       toast({ title: 'Error', description: 'Please fill all fields', variant: 'destructive' });
       return;
     }
-    addCustomer({ name: newName, phone: newPhone });
+    setBusy(true);
+    try {
+      await addCustomer({ name: newName.trim(), phone: newPhone.trim() });
+    } catch (e) {
+      toast({ title: 'Could not add customer', description: errorMessage(e), variant: 'destructive' });
+      return;
+    } finally {
+      setBusy(false);
+    }
     setNewName('');
     setNewPhone('');
     setIsAddOpen(false);
     toast({ title: 'Customer added', description: `${newName} has been added.` });
   };
 
-  const handleAddPayment = () => {
+  const handleAddPayment = async () => {
     const amount = parseFloat(paymentAmount);
-    if (!selectedCustomerId || isNaN(amount) || amount <= 0) {
+    const pending = selectedCustomerId ? getCustomerById(selectedCustomerId)?.pendingAmount ?? 0 : 0;
+    if (!selectedCustomerId || isNaN(amount) || amount <= 0 || !/^\d+(\.\d{1,2})?$/.test(paymentAmount.trim())) {
       toast({ title: 'Error', description: 'Please enter a valid amount', variant: 'destructive' });
       return;
     }
-    addPayment(selectedCustomerId, amount, 'Payment received');
+    if (amount > pending) {
+      toast({ title: 'Error', description: `Payment is more than the pending amount (${formatPrice(pending)})`, variant: 'destructive' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await addPayment(selectedCustomerId, amount, 'Payment received');
+    } catch (e) {
+      toast({ title: 'Payment not recorded', description: errorMessage(e), variant: 'destructive' });
+      return;
+    } finally {
+      setBusy(false);
+    }
     setPaymentAmount('');
     setIsPaymentOpen(false);
     toast({ title: 'Payment recorded', description: `Payment of ${formatPrice(amount)} received.` });
+  };
+
+  const handleDeleteCustomer = async (id: string, name: string) => {
+    if (!window.confirm(`Delete ${name}? Their history will be removed from this list.`)) return;
+    try {
+      await deleteCustomer(id);
+    } catch (e) {
+      toast({ title: 'Could not delete customer', description: errorMessage(e), variant: 'destructive' });
+      return;
+    }
+    toast({ title: 'Customer deleted', description: `${name} has been removed.` });
   };
 
   const customersWithPending = customers.filter(c => c.pendingAmount > 0);
@@ -98,7 +134,7 @@ export default function CustomersPage() {
                     className="h-12"
                   />
                 </div>
-                <Button onClick={handleAddCustomer} className="w-full gradient-primary text-primary-foreground">
+                <Button onClick={handleAddCustomer} disabled={busy} className="w-full gradient-primary text-primary-foreground">
                   Add Customer
                 </Button>
               </div>
@@ -203,6 +239,21 @@ export default function CustomersPage() {
                   </div>
                 </div>
 
+                {/* Only a customer with nothing pending can be deleted */}
+                {expandedCustomer === customer.id && isOwner && customer.pendingAmount === 0 && (
+                  <div className="mt-4 flex justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                      onClick={() => handleDeleteCustomer(customer.id, customer.name)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete customer
+                    </Button>
+                  </div>
+                )}
+
                 {/* Transaction History */}
                 {expandedCustomer === customer.id && customer.transactions.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-border">
@@ -255,7 +306,7 @@ export default function CustomersPage() {
                 className="h-12"
               />
             </div>
-            <Button onClick={handleAddPayment} className="w-full gradient-success text-success-foreground">
+            <Button onClick={handleAddPayment} disabled={busy} className="w-full gradient-success text-success-foreground">
               <CreditCard className="h-5 w-5" />
               Record Payment
             </Button>

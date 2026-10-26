@@ -1,9 +1,13 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Sale } from '@/types/product';
+import { api } from '@/lib/api/client';
+import { ApiSale, toSale } from '@/lib/api/types';
 
 interface SalesHistoryContextType {
+  /** Newest first. Checkout refreshes this; there is no local add. */
   sales: Sale[];
-  addSale: (sale: Sale) => void;
+  isLoading: boolean;
   getSalesByDateRange: (start: Date, end: Date) => Sale[];
   getMonthlySalesData: () => MonthlySalesData[];
   getTopProductsByMonth: (year: number, month: number) => ProductSalesData[];
@@ -26,25 +30,23 @@ export interface ProductSalesData {
 
 const SalesHistoryContext = createContext<SalesHistoryContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'shop_sales_history';
+export const SALES_KEY = ['sales'];
+
+/** The history page works over the whole history, so every page is fetched. */
+async function fetchAllSales(): Promise<Sale[]> {
+  const all: Sale[] = [];
+  let cursor: string | null = null;
+  do {
+    const query = `/sales?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const page: { sales: ApiSale[]; nextCursor: string | null } = await api('GET', query);
+    all.push(...page.sales.map(toSale));
+    cursor = page.nextCursor;
+  } while (cursor);
+  return all;
+}
 
 export function SalesHistoryProvider({ children }: { children: ReactNode }) {
-  const [sales, setSales] = useState<Sale[]>(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      return parsed.map((s: Sale) => ({ ...s, date: new Date(s.date) }));
-    }
-    return [];
-  });
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sales));
-  }, [sales]);
-
-  const addSale = (sale: Sale) => {
-    setSales(prev => [sale, ...prev]);
-  };
+  const { data: sales = [], isLoading } = useQuery({ queryKey: SALES_KEY, queryFn: fetchAllSales });
 
   const getSalesByDateRange = (start: Date, end: Date): Sale[] => {
     return sales.filter(s => {
@@ -121,7 +123,7 @@ export function SalesHistoryProvider({ children }: { children: ReactNode }) {
     <SalesHistoryContext.Provider
       value={{
         sales,
-        addSale,
+        isLoading,
         getSalesByDateRange,
         getMonthlySalesData,
         getTopProductsByMonth,

@@ -8,6 +8,7 @@ import { useProducts } from '@/context/ProductContext';
 import { useSettings } from '@/context/SettingsContext';
 import { Product } from '@/types/product';
 import { toast } from '@/hooks/use-toast';
+import { errorMessage } from '@/lib/api/client';
 
 export default function AdminPage() {
   const { products, addProduct, updateProduct, deleteProduct } = useProducts();
@@ -31,28 +32,35 @@ export default function AdminPage() {
     setIsFormOpen(true);
   };
 
-  const handleDeleteProduct = (id: string) => {
-    deleteProduct(id);
+  const handleDeleteProduct = async (id: string) => {
+    try {
+      await deleteProduct(id);
+    } catch (e) {
+      toast({ title: 'Could not delete product', description: errorMessage(e), variant: 'destructive' });
+      return;
+    }
     toast({
       title: 'Product deleted',
       description: 'The product has been removed from your inventory.',
     });
   };
 
-  const handleFormSubmit = (data: { name: string; price: number; stock: number; image?: string }) => {
-    if (editingProduct) {
-      updateProduct(editingProduct.id, data);
-      toast({
-        title: 'Product updated',
-        description: `${data.name} has been updated.`,
-      });
-    } else {
-      addProduct(data);
-      toast({
-        title: 'Product added',
-        description: `${data.name} has been added to your inventory.`,
-      });
+  const handleFormSubmit = async (data: { name: string; price: number; stock: number; image?: string }) => {
+    try {
+      if (editingProduct) {
+        await updateProduct(editingProduct.id, data);
+      } else {
+        await addProduct(data);
+      }
+    } catch (e) {
+      // Keep the form open so nothing typed is lost.
+      toast({ title: 'Could not save product', description: errorMessage(e), variant: 'destructive' });
+      return;
     }
+    toast({
+      title: editingProduct ? 'Product updated' : 'Product added',
+      description: editingProduct ? `${data.name} has been updated.` : `${data.name} has been added to your inventory.`,
+    });
     setIsFormOpen(false);
     setEditingProduct(null);
   };

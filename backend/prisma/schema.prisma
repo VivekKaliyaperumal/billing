@@ -1,0 +1,230 @@
+// Thyantra Billing — multi-shop data model.
+//
+// Records the clients create (products, customers, sales, transactions) keep
+// the client's id, scoped by shop: devices create them offline, and older
+// installs used short ids such as "1", so ids are only unique within a shop.
+//
+// `seq` is set by a database trigger from the `change_seq` sequence on every
+// insert and update (see the init migration). The sync pull uses it as its
+// cursor. Writes for one shop are serialised with an advisory lock, so a
+// shop's seq values are in commit order.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  CASHIER
+}
+
+enum TransactionType {
+  CREDIT
+  PAYMENT
+}
+
+enum SaleSource {
+  WEB
+  MOBILE
+  IMPORT
+}
+
+model Shop {
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String
+  currency       String   @default("INR")
+  currencySymbol String   @default("₹") @map("currency_symbol")
+  // Bumped by a restore, which replaces data without leaving tombstones;
+  // devices whose sync cursor has an older epoch start again from scratch.
+  dataEpoch      Int      @default(1) @map("data_epoch")
+  seq            BigInt   @default(0)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  users        User[]
+  products     Product[]
+  customers    Customer[]
+  sales        Sale[]
+  transactions CustomerTransaction[]
+
+  @@map("shops")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  shopId       String   @map("shop_id") @db.Uuid
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  role         Role
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  shop          Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([shopId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  // All tokens issued from one login share a family; reuse of a rotated
+  // token revokes the whole family.
+  family    String    @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  userAgent String?   @map("user_agent")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([family])
+  @@map("refresh_tokens")
+}
+
+model Product {
+  shopId      String    @map("shop_id") @db.Uuid
+  id          String
+  name        String
+  price       Decimal   @db.Decimal(14, 2)
+  stock       Int
+  image       String?
+  usageCount  Int       @default(0) @map("usage_count")
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
+  seq         BigInt    @default(0)
+  createdById String?   @map("created_by_id") @db.Uuid
+  updatedById String?   @map("updated_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@id([shopId, id])
+  @@index([shopId, seq])
+  @@map("products")
+}
+
+model Customer {
+  shopId      String    @map("shop_id") @db.Uuid
+  id          String
+  name        String
+  // Normalised: spaces, dashes, dots and brackets removed.
+  phone       String
+  pending     Decimal   @default(0) @db.Decimal(14, 2)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
+  seq         BigInt    @default(0)
+  createdById String?   @map("created_by_id") @db.Uuid
+  updatedById String?   @map("updated_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  shop         Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  transactions CustomerTransaction[]
+
+  // Phone is unique among non-deleted customers of a shop: a partial unique
+  // index created in the init migration (Prisma cannot express it).
+  @@id([shopId, id])
+  @@index([shopId, seq])
+  @@map("customers")
+}
+
+/// Two devices that each created the same customer offline: the second id is
+/// an alias of the first, so later operations using it reach the right ledger.
+model CustomerAlias {
+  shopId     String   @map("shop_id") @db.Uuid
+  aliasId    String   @map("alias_id")
+  customerId String   @map("customer_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([shopId, aliasId])
+  @@map("customer_aliases")
+}
+
+model Sale {
+  shopId      String     @map("shop_id") @db.Uuid
+  id          String
+  date        DateTime   @db.Timestamptz(3)
+  total       Decimal    @db.Decimal(14, 2)
+  // No foreign key: a sale keeps its customer id even if the customer is
+  // later deleted, as the apps do.
+  customerId  String?    @map("customer_id")
+  isPending   Boolean?   @map("is_pending")
+  source      SaleSource
+  deviceId    String?    @map("device_id")
+  seq         BigInt     @default(0)
+  createdById String?    @map("created_by_id") @db.Uuid
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  shop  Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  items SaleItem[]
+
+  @@id([shopId, id])
+  @@index([shopId, seq])
+  @@index([shopId, date])
+  @@map("sales")
+}
+
+/// Snapshot of the product as sold, so history is unaffected by later edits.
+model SaleItem {
+  id          BigInt  @id @default(autoincrement())
+  shopId      String  @map("shop_id") @db.Uuid
+  saleId      String  @map("sale_id")
+  position    Int
+  productId   String  @map("product_id")
+  productName String  @map("product_name")
+  unitPrice   Decimal @map("unit_price") @db.Decimal(14, 2)
+  quantity    Int
+  // Units sold offline that the server had no stock for.
+  shortfall   Int     @default(0)
+
+  sale Sale @relation(fields: [shopId, saleId], references: [shopId, id], onDelete: Cascade)
+
+  @@index([shopId, saleId])
+  @@index([shopId, productId])
+  @@map("sale_items")
+}
+
+model CustomerTransaction {
+  shopId      String          @map("shop_id") @db.Uuid
+  id          String
+  customerId  String          @map("customer_id")
+  type        TransactionType
+  amount      Decimal         @db.Decimal(14, 2)
+  description String
+  date        DateTime        @db.Timestamptz(3)
+  saleId      String?         @map("sale_id")
+  seq         BigInt          @default(0)
+  createdById String?         @map("created_by_id") @db.Uuid
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  shop     Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [shopId, customerId], references: [shopId, id], onDelete: Cascade)
+
+  @@id([shopId, id])
+  @@index([shopId, customerId])
+  @@index([shopId, seq])
+  @@map("customer_transactions")
+}
+
+/// Result of each sync operation, so a retried push is applied only once.
+model ProcessedOp {
+  shopId    String   @map("shop_id") @db.Uuid
+  opId      String   @map("op_id")
+  type      String
+  result    Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([shopId, opId])
+  @@map("processed_ops")
+}

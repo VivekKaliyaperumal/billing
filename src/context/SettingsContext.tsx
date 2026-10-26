@@ -1,15 +1,17 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { AppSettings, CURRENCIES } from '@/types/product';
+import React, { createContext, useContext, ReactNode } from 'react';
+import { AppSettings } from '@/types/product';
+import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api/client';
+import { ApiShop } from '@/lib/api/types';
 
 interface SettingsContextType {
   settings: AppSettings;
-  updateSettings: (updates: Partial<AppSettings>) => void;
+  /** Owner only. Saves to the server; the currency symbol follows the currency. */
+  updateSettings: (updates: Partial<AppSettings>) => Promise<void>;
   formatPrice: (amount: number) => string;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
-
-const SETTINGS_KEY = 'shop_settings';
 
 const defaultSettings: AppSettings = {
   currency: 'INR',
@@ -17,30 +19,16 @@ const defaultSettings: AppSettings = {
   shopName: 'ShopEase',
 };
 
+/** Shop settings now live on the server, with the signed-in shop. */
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<AppSettings>(() => {
-    const stored = localStorage.getItem(SETTINGS_KEY);
-    if (stored) {
-      return JSON.parse(stored);
-    }
-    return defaultSettings;
-  });
+  const { shop, setShop } = useAuth();
 
-  useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  }, [settings]);
+  const settings: AppSettings = shop
+    ? { currency: shop.currency, currencySymbol: shop.currencySymbol, shopName: shop.name }
+    : defaultSettings;
 
-  const updateSettings = (updates: Partial<AppSettings>) => {
-    setSettings(prev => {
-      const newSettings = { ...prev, ...updates };
-      if (updates.currency) {
-        const currency = CURRENCIES.find(c => c.code === updates.currency);
-        if (currency) {
-          newSettings.currencySymbol = currency.symbol;
-        }
-      }
-      return newSettings;
-    });
+  const updateSettings = async (updates: Partial<AppSettings>) => {
+    setShop(await api<ApiShop>('PATCH', '/shop', { shopName: updates.shopName, currency: updates.currency }));
   };
 
   const formatPrice = (amount: number): string => {

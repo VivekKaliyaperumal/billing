@@ -1,14 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../data/app_database.dart';
 import '../models/models.dart';
+import '../models/sync_models.dart';
 import '../utils/format.dart';
 import '../utils/storage.dart';
 
 /// Port of `src/context/SettingsContext.tsx` plus the theme preference
 /// from `src/components/ThemeProvider.tsx`.
 class SettingsProvider extends ChangeNotifier {
-  SettingsProvider(this._prefs) {
+  /// [db] is used to queue settings changes for the shop while signed in.
+  SettingsProvider(this._prefs, [this._db]) {
     _settings = readJsonObject(_prefs, storageKey, AppSettings.fromJson) ?? AppSettings.defaults;
     _themeMode = _prefs.getString(themeKey) == 'dark' ? ThemeMode.dark : ThemeMode.light;
   }
@@ -17,6 +22,7 @@ class SettingsProvider extends ChangeNotifier {
   static const themeKey = 'shop-ui-theme';
 
   final SharedPreferences _prefs;
+  final AppDatabase? _db;
   late AppSettings _settings;
   late ThemeMode _themeMode;
 
@@ -38,6 +44,26 @@ class SettingsProvider extends ChangeNotifier {
       currencySymbol: symbol,
       shopName: name == null || name.isEmpty ? _settings.shopName : name,
     );
+    writeJson(_prefs, storageKey, _settings.toJson());
+    notifyListeners();
+    final db = _db;
+    if (db != null && db.syncEnabled) {
+      unawaited(
+        db
+            .enqueue('settings.update', {'shopName': _settings.shopName, 'currency': _settings.currency})
+            .catchError((Object e) => reportStorageIssue('Could not queue the settings change for the shop.', e)),
+      );
+    }
+  }
+
+  /// Takes the shop's settings from the server. Not queued back.
+  void applyServerSettings(ShopInfo shop) {
+    if (shop.name == _settings.shopName &&
+        shop.currency == _settings.currency &&
+        shop.currencySymbol == _settings.currencySymbol) {
+      return;
+    }
+    _settings = AppSettings(currency: shop.currency, currencySymbol: shop.currencySymbol, shopName: shop.name);
     writeJson(_prefs, storageKey, _settings.toJson());
     notifyListeners();
   }

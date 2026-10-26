@@ -1,107 +1,57 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Customer, CustomerTransaction } from '@/types/product';
+import React, { createContext, useContext, ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Customer } from '@/types/product';
+import { api } from '@/lib/api/client';
+import { ApiCustomer, toCustomer, toMinor } from '@/lib/api/types';
 
 interface CustomerContextType {
   customers: Customer[];
-  addCustomer: (customer: Omit<Customer, 'id' | 'createdAt' | 'transactions' | 'pendingAmount'>) => Customer;
-  updateCustomer: (id: string, updates: Partial<Customer>) => void;
-  deleteCustomer: (id: string) => void;
-  addCredit: (customerId: string, amount: number, description: string, saleId?: string) => void;
-  addPayment: (customerId: string, amount: number, description: string) => void;
+  isLoading: boolean;
+  addCustomer: (customer: { name: string; phone: string }) => Promise<Customer>;
+  updateCustomer: (id: string, updates: { name?: string; phone?: string }) => Promise<void>;
+  /** Owner only; refused while the customer has a pending balance. */
+  deleteCustomer: (id: string) => Promise<void>;
+  /** Refused if more than the pending balance. */
+  addPayment: (customerId: string, amount: number, description: string) => Promise<void>;
   getCustomerById: (id: string) => Customer | undefined;
   getTotalPendingAmount: () => number;
 }
 
 const CustomerContext = createContext<CustomerContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'shop_customers';
+export const CUSTOMERS_KEY = ['customers'];
 
 export function CustomerProvider({ children }: { children: ReactNode }) {
-  const [customers, setCustomers] = useState<Customer[]>(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      return parsed.map((c: Customer) => ({
-        ...c,
-        createdAt: new Date(c.createdAt),
-        transactions: c.transactions.map((t: CustomerTransaction) => ({
-          ...t,
-          date: new Date(t.date),
-        })),
-      }));
-    }
-    return [];
+  const queryClient = useQueryClient();
+  const { data: customers = [], isLoading } = useQuery({
+    queryKey: CUSTOMERS_KEY,
+    queryFn: async () => (await api<ApiCustomer[]>('GET', '/customers?include=transactions')).map(toCustomer),
   });
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(customers));
-  }, [customers]);
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: CUSTOMERS_KEY });
 
-  const addCustomer = (customer: Omit<Customer, 'id' | 'createdAt' | 'transactions' | 'pendingAmount'>): Customer => {
-    const newCustomer: Customer = {
-      ...customer,
-      id: crypto.randomUUID(),
-      pendingAmount: 0,
-      createdAt: new Date(),
-      transactions: [],
-    };
-    setCustomers(prev => [...prev, newCustomer]);
-    return newCustomer;
+  const addCustomer = async (customer: { name: string; phone: string }): Promise<Customer> => {
+    const created = await api<ApiCustomer>('POST', '/customers', customer);
+    await invalidate();
+    return toCustomer(created);
   };
 
-  const updateCustomer = (id: string, updates: Partial<Customer>) => {
-    setCustomers(prev =>
-      prev.map(c => (c.id === id ? { ...c, ...updates } : c))
-    );
+  const updateCustomer = async (id: string, updates: { name?: string; phone?: string }) => {
+    await api<ApiCustomer>('PATCH', `/customers/${encodeURIComponent(id)}`, updates);
+    await invalidate();
   };
 
-  const deleteCustomer = (id: string) => {
-    setCustomers(prev => prev.filter(c => c.id !== id));
+  const deleteCustomer = async (id: string) => {
+    await api('DELETE', `/customers/${encodeURIComponent(id)}`);
+    await invalidate();
   };
 
-  const addCredit = (customerId: string, amount: number, description: string, saleId?: string) => {
-    const transaction: CustomerTransaction = {
-      id: crypto.randomUUID(),
-      amount,
-      type: 'credit',
+  const addPayment = async (customerId: string, amount: number, description: string) => {
+    await api('POST', `/customers/${encodeURIComponent(customerId)}/payments`, {
+      amountMinor: toMinor(amount),
       description,
-      date: new Date(),
-      saleId,
-    };
-
-    setCustomers(prev =>
-      prev.map(c =>
-        c.id === customerId
-          ? {
-              ...c,
-              pendingAmount: c.pendingAmount + amount,
-              transactions: [...c.transactions, transaction],
-            }
-          : c
-      )
-    );
-  };
-
-  const addPayment = (customerId: string, amount: number, description: string) => {
-    const transaction: CustomerTransaction = {
-      id: crypto.randomUUID(),
-      amount,
-      type: 'payment',
-      description,
-      date: new Date(),
-    };
-
-    setCustomers(prev =>
-      prev.map(c =>
-        c.id === customerId
-          ? {
-              ...c,
-              pendingAmount: Math.max(0, c.pendingAmount - amount),
-              transactions: [...c.transactions, transaction],
-            }
-          : c
-      )
-    );
+    });
+    await invalidate();
   };
 
   const getCustomerById = (id: string): Customer | undefined => {
@@ -116,10 +66,10 @@ export function CustomerProvider({ children }: { children: ReactNode }) {
     <CustomerContext.Provider
       value={{
         customers,
+        isLoading,
         addCustomer,
         updateCustomer,
         deleteCustomer,
-        addCredit,
         addPayment,
         getCustomerById,
         getTotalPendingAmount,

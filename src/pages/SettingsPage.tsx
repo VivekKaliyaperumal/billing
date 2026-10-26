@@ -6,16 +6,31 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useSettings } from '@/context/SettingsContext';
+import { useAuth } from '@/context/AuthContext';
 import { CURRENCIES } from '@/types/product';
 import { toast } from '@/hooks/use-toast';
+import { errorMessage } from '@/lib/api/client';
+import { AccountCard } from '@/components/settings/AccountCard';
+import { StaffManager } from '@/components/settings/StaffManager';
+import { LegacyImport } from '@/components/settings/LegacyImport';
 
 export default function SettingsPage() {
   const { settings, updateSettings } = useSettings();
+  const { isOwner } = useAuth();
   const [shopName, setShopName] = useState(settings.shopName);
   const [currency, setCurrency] = useState(settings.currency);
+  const [busy, setBusy] = useState(false);
 
-  const handleSave = () => {
-    updateSettings({ shopName, currency });
+  const handleSave = async () => {
+    setBusy(true);
+    try {
+      await updateSettings({ shopName, currency });
+    } catch (e) {
+      toast({ title: 'Settings not saved', description: errorMessage(e), variant: 'destructive' });
+      return;
+    } finally {
+      setBusy(false);
+    }
     toast({
       title: 'Settings saved',
       description: 'Your preferences have been updated.',
@@ -31,12 +46,14 @@ export default function SettingsPage() {
           </div>
           <div>
             <h1 className="font-display text-3xl font-bold text-foreground">Settings</h1>
-            <p className="text-muted-foreground">Manage your shop preferences</p>
+            <p className="text-muted-foreground">Manage your shop, staff and account</p>
           </div>
         </div>
       </div>
 
       <div className="grid gap-6 max-w-2xl">
+        {isOwner && <LegacyImport />}
+
         <Card className="border-border shadow-medium">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 font-display">
@@ -54,6 +71,7 @@ export default function SettingsPage() {
                 onChange={e => setShopName(e.target.value)}
                 placeholder="Enter shop name"
                 className="h-12"
+                disabled={!isOwner}
               />
             </div>
           </CardContent>
@@ -70,7 +88,7 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="currency">Currency Type</Label>
-              <Select value={currency} onValueChange={setCurrency}>
+              <Select value={currency} onValueChange={setCurrency} disabled={!isOwner}>
                 <SelectTrigger className="h-12">
                   <SelectValue placeholder="Select currency" />
                 </SelectTrigger>
@@ -97,10 +115,16 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Button onClick={handleSave} size="lg" className="w-fit gradient-primary text-primary-foreground shadow-medium hover:shadow-glow transition-all">
-          <Save className="h-5 w-5" />
-          Save Settings
-        </Button>
+        {isOwner && (
+          <Button onClick={handleSave} disabled={busy} size="lg" className="w-fit gradient-primary text-primary-foreground shadow-medium hover:shadow-glow transition-all">
+            <Save className="h-5 w-5" />
+            Save Settings
+          </Button>
+        )}
+
+        {isOwner && <StaffManager />}
+
+        <AccountCard />
       </div>
     </div>
   );
